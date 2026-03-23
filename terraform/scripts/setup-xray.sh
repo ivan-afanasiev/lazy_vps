@@ -27,8 +27,8 @@ bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release
 
 # --- Generate x25519 keypair ---
 KEY_OUTPUT=$(/usr/local/bin/xray x25519)
-PRIVATE_KEY=$(echo "$KEY_OUTPUT" | grep "Private key:" | awk '{print $3}')
-PUBLIC_KEY=$(echo "$KEY_OUTPUT" | grep "Public key:" | awk '{print $3}')
+PRIVATE_KEY=$(echo "$KEY_OUTPUT" | awk '/PrivateKey:/{print $2}')
+PUBLIC_KEY=$(echo "$KEY_OUTPUT" | awk '/Password:/{print $2}')
 
 # --- Write Xray Config ---
 cat > /usr/local/etc/xray/config.json <<XRAYCONF
@@ -196,7 +196,9 @@ TG_LINK=$(docker compose logs 2>&1 | grep -oP 'tg://proxy\S+' | head -1 || true)
 if [ -z "$TG_LINK" ]; then
   # Build the link manually if log parsing fails
   MTPROTO_SECRET_EE="ee$MTPROTO_SECRET$(echo -n "$MTPROTO_MASK_DOMAIN" | xxd -p)"
-  TG_LINK="tg://proxy?server=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)&port=$MTPROTO_PORT&secret=$MTPROTO_SECRET_EE"
+  IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+  PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
+  TG_LINK="tg://proxy?server=$PUBLIC_IP&port=$MTPROTO_PORT&secret=$MTPROTO_SECRET_EE"
 fi
 
 echo "$TG_LINK" > /opt/telemt/tg_link.txt
