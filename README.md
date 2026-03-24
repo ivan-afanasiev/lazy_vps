@@ -78,26 +78,27 @@ Override defaults by creating `terraform.tfvars`:
 aws_region          = "eu-central-1"
 instance_type       = "t3.micro"
 ssh_public_key_path = "~/.ssh/id_ed25519.pub"
-camouflage_domain   = "www.microsoft.com"
+camouflage_domain   = "www.vk.com"
 ssh_cidr_blocks     = ["0.0.0.0/0"]
 mtproto_port        = 8443
-mtproto_mask_domain = "www.leroymerlin.de"
+mtproto_mask_domain = "www.yandex.ru"
 ```
 
 ### Camouflage Domains
 
 **VLESS Reality** (`camouflage_domain`) — the domain your VPN pretends to be. Good choices:
-- `www.microsoft.com` (default)
-- `www.apple.com`
-- `dl.google.com`
-- `www.samsung.com`
+- `www.vk.com` (default)
+- `www.yandex.ru`
+- `mail.ru`
+- `ok.ru`
 
 **Telegram MTProto** (`mtproto_mask_domain`) — the domain Telemt impersonates during active probing. Good choices:
-- `www.leroymerlin.de` (default)
-- `www.mediamarkt.de`
-- `www.saturn.de`
+- `www.yandex.ru` (default)
+- `www.vk.com`
+- `mail.ru`
+- `dzen.ru`
 
-Pick sites with TLS 1.3 support. Avoid using the same domain as everyone else.
+Pick popular domestic Russian sites with TLS 1.3 support. These will never be blocked by Roskomnadzor.
 
 ## How It Works
 
@@ -107,11 +108,11 @@ Pick sites with TLS 1.3 support. Avoid using the same domain as everyone else.
                     │                                  │
   VPN traffic ─────▶│  Xray (port 443)                 │──▶ Internet
   (all apps)        │  VLESS + XTLS-Reality            │
-                    │  Looks like HTTPS to microsoft   │
+                    │  Looks like HTTPS to vk.com     │
                     │                                  │
   Telegram ────────▶│  Telemt (port 8443)              │──▶ Telegram servers
   (direct in app)   │  MTProto + Fake TLS              │
-                    │  Active probes see leroymerlin   │
+                    │  Active probes see yandex.ru    │
                     └──────────────────────────────────┘
 ```
 

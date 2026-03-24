@@ -25,7 +25,7 @@ variable "ssh_cidr_blocks" {
 variable "camouflage_domain" {
   description = "Domain to mimic for Reality TLS fingerprint"
   type        = string
-  default     = "www.microsoft.com"
+  default     = "www.vk.com"
 }
 
 variable "mtproto_port" {
@@ -37,5 +37,5 @@ variable "mtproto_port" {
 variable "mtproto_mask_domain" {
   description = "Domain that MTProto proxy impersonates during active probing"
   type        = string
-  default     = "www.leroymerlin.de"
+  default     = "www.yandex.ru"
 }
