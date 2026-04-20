@@ -34,7 +34,9 @@ PUBLIC_KEY=$(echo "$KEY_OUTPUT" | awk '/Password:/{print $2}')
 cat > /usr/local/etc/xray/config.json <<XRAYCONF
 {
   "log": {
-    "loglevel": "warning"
+    "loglevel": "warning",
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log"
   },
   "inbounds": [
     {
