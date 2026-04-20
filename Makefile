@@ -133,6 +133,56 @@ status: ## Check if Xray is running on the VPS
 	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo systemctl status xray --no-pager'
 
 # ──────────────────────────────────────────────
+# Monitoring
+# ──────────────────────────────────────────────
+
+.PHONY: traffic
+traffic: ## Show network traffic used this month (CloudWatch, month-to-date)
+	@set -e; \
+	INSTANCE_ID=$$(aws ec2 describe-instances \
+		--filters "Name=tag:Name,Values=lazy-vps" "Name=instance-state-name,Values=running" \
+		--query 'Reservations[0].Instances[0].InstanceId' --output text); \
+	[ -n "$$INSTANCE_ID" ] && [ "$$INSTANCE_ID" != "None" ] || { echo "❌ No running lazy-vps instance found."; exit 1; }; \
+	START=$$(date -u +"%Y-%m-01T00:00:00Z"); \
+	END=$$(date -u +"%Y-%m-%dT%H:%M:%SZ"); \
+	MONTH=$$(date -u +"%B %Y"); \
+	sum_metric() { \
+		aws cloudwatch get-metric-statistics \
+			--namespace AWS/EC2 --metric-name "$$1" \
+			--dimensions Name=InstanceId,Value=$$INSTANCE_ID \
+			--start-time "$$START" --end-time "$$END" \
+			--period 86400 --statistics Sum \
+			--query 'Datapoints[].Sum' --output text \
+		| tr '\t' '\n' | awk '{s+=$$1} END {printf "%.0f\n", s+0}'; \
+	}; \
+	IN_BYTES=$$(sum_metric NetworkIn); \
+	OUT_BYTES=$$(sum_metric NetworkOut); \
+	REGION=$$(aws configure get region 2>/dev/null || echo "unknown"); \
+	awk -v i="$$IN_BYTES" -v o="$$OUT_BYTES" -v m="$$MONTH" -v id="$$INSTANCE_ID" -v region="$$REGION" 'BEGIN { \
+		g=1024*1024*1024; \
+		free_gb = 100; \
+		rate = 0.09; \
+		out_gb = o/g; \
+		free_left = free_gb - out_gb; if (free_left < 0) free_left = 0; \
+		billable = out_gb - free_gb; if (billable < 0) billable = 0; \
+		cost = billable * rate; \
+		printf "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"; \
+		printf "Traffic for %s (month-to-date)\n", m; \
+		printf "Instance: %s  (%s)\n\n", id, region; \
+		printf "  In:    %7.2f GB  (free)\n", i/g; \
+		printf "  Out:   %7.2f GB\n", out_gb; \
+		printf "  Total: %7.2f GB\n", (i+o)/g; \
+		printf "\nBilling estimate (data transfer out to internet):\n"; \
+		printf "  Free tier:    %6.2f GB / %.0f GB (account-wide, always-free)\n", (out_gb < free_gb ? out_gb : free_gb), free_gb; \
+		printf "  Free left:    %6.2f GB\n", free_left; \
+		printf "  Billable:     %6.2f GB  @ $$%.2f/GB\n", billable, rate; \
+		printf "  Est. cost:    $$%.2f\n", cost; \
+		printf "\n  Note: rate assumes first 10 TB tier (most regions, incl. eu-central-1).\n"; \
+		printf "        EC2 instance-hours and EBS storage are billed separately.\n"; \
+		printf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" \
+	}'
+
+# ──────────────────────────────────────────────
 # Help
 # ──────────────────────────────────────────────
 

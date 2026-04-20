@@ -16,3 +16,9 @@ id_*
 
 # OS
 .DS_Store
+
+# Env
+.env
+
+# Claude
+.claude/setting.json
