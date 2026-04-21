@@ -177,7 +177,16 @@ cat > /opt/lazy-vps-bot/Dockerfile <<'DOCKERFILE'
 FROM python:3.12-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates docker.io \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends docker-ce-cli \
+ && apt-get purge -y --auto-remove curl gnupg \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
@@ -209,6 +218,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Root-owned mode-600 files (xray logs are nobody:nogroup 600) need
+    # DAC_READ_SEARCH to be readable from root in the container with
+    # cap_drop=ALL. Keep the container otherwise fully unprivileged.
+    cap_add:
+      - DAC_READ_SEARCH
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=16m
