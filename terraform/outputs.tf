@@ -39,6 +39,11 @@ output "mtproto_port" {
   value       = var.mtproto_port
 }
 
+output "aws_region" {
+  description = "AWS region the VPS is deployed in"
+  value       = var.aws_region
+}
+
 output "get_tg_link" {
   description = "Run this command after deploy to get your Telegram proxy link"
   value       = <<-EOT

@@ -263,6 +263,52 @@ bot-restart: ## Restart the lazy-vps-bot container
 	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
 	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker restart lazy-vps-bot'
 
+.PHONY: bot-install
+bot-install: check-bot-env ## Install/upgrade the bot on an already-deployed VPS (no reboot, no Xray/Telemt impact)
+	@set -e; \
+	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	XRAY_UUID=$$(cd $(TF_DIR) && terraform output -raw xray_uuid); \
+	XRAY_SHORT_ID=$$(cd $(TF_DIR) && terraform output -raw xray_short_id); \
+	CAMOUFLAGE_DOMAIN=$$(cd $(TF_DIR) && terraform output -raw camouflage_domain); \
+	MTPROTO_PORT=$$(cd $(TF_DIR) && terraform output -raw mtproto_port); \
+	AWS_REGION=$$(cd $(TF_DIR) && terraform output -raw aws_region 2>/dev/null || echo eu-central-1); \
+	echo "Uploading bot.py and install-bot.sh to $$IP…"; \
+	scp -q -o StrictHostKeyChecking=no \
+		$(TF_DIR)/scripts/bot.py \
+		$(TF_DIR)/scripts/install-bot.sh \
+		ubuntu@$$IP:/tmp/; \
+	echo "Running installer remotely…"; \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP "sudo mkdir -p /opt/lazy-vps-bot && \
+		sudo mv /tmp/bot.py /opt/lazy-vps-bot/bot.py && \
+		sudo mv /tmp/install-bot.sh /opt/lazy-vps-bot/install-bot.sh && \
+		sudo chmod 755 /opt/lazy-vps-bot/install-bot.sh && \
+		sudo env \
+			TELEGRAM_BOT_TOKEN='$$TF_VAR_telegram_bot_token' \
+			TELEGRAM_ALLOWED_USERS='$$TF_VAR_telegram_allowed_users' \
+			AWS_REGION='$$AWS_REGION' \
+			XRAY_UUID='$$XRAY_UUID' \
+			XRAY_SHORT_ID='$$XRAY_SHORT_ID' \
+			CAMOUFLAGE_DOMAIN='$$CAMOUFLAGE_DOMAIN' \
+			MTPROTO_PORT='$$MTPROTO_PORT' \
+			BOT_PY_PATH=/opt/lazy-vps-bot/bot.py \
+			/opt/lazy-vps-bot/install-bot.sh"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "Bot installed/updated. Check:"
+	@echo "  make bot-status"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+.PHONY: bot-update
+bot-update: ## Fast path: sync bot.py only and restart the container (no config re-render)
+	@set -e; \
+	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	echo "Uploading bot.py to $$IP…"; \
+	scp -q -o StrictHostKeyChecking=no $(TF_DIR)/scripts/bot.py ubuntu@$$IP:/tmp/bot.py; \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo mv /tmp/bot.py /opt/lazy-vps-bot/bot.py && \
+		sudo chmod 644 /opt/lazy-vps-bot/bot.py && \
+		cd /opt/lazy-vps-bot && sudo docker compose up -d --build'
+	@echo "Bot updated."
+
 # ──────────────────────────────────────────────
 # Monitoring
 # ──────────────────────────────────────────────

@@ -70,6 +70,8 @@ make destroy      # Tear everything down
 make bot-status   # Show Telegram bot container status
 make bot-logs     # Follow Telegram bot logs
 make bot-restart  # Restart the Telegram bot container
+make bot-install  # Install/upgrade bot on a running VPS
+make bot-update   # Fast path: sync bot.py and rebuild container
 make help         # Show all available commands
 ```
 
@@ -116,11 +118,33 @@ your laptop.
 Only the users in `TF_VAR_telegram_allowed_users` can invoke commands; everyone
 else gets "Not authorized." and the attempt is logged (see `make bot-logs`).
 
-To change the allowed-users list without re-deploying the full VPS, update
-`TF_VAR_telegram_allowed_users` and run `make deploy` — Terraform will detect
-the `user_data` change and prompt you. Note that re-applying `user_data` on an
-existing instance will replace it; for quick edits, SSH in and edit
-`/opt/lazy-vps-bot/bot.env`, then `make bot-restart`.
+### Adding the bot to an existing deployment
+
+If you already have a `lazy-vps` instance running (from before the bot existed)
+you can install it in-place — no reboot, no new IP, existing VLESS/Telegram
+users keep working:
+
+```bash
+git pull
+export TF_VAR_telegram_bot_token='123456:ABC...'
+export TF_VAR_telegram_allowed_users='["123456789","alice"]'
+
+# 1. Apply IAM role + instance profile (no instance replacement — user_data
+#    is ignored on existing instances).
+make deploy
+
+# 2. Install the bot on the running VPS.
+make bot-install
+```
+
+After `bot-install` finishes, message your bot `/start`.
+
+### Updating the bot later
+
+- **Code-only change** (edit `bot.py`): `make bot-update` — rebuilds the
+  container on the VPS, keeps `bot.env` as-is.
+- **Change allowed users or token**: update the `TF_VAR_*` env vars, then
+  `make bot-install` — it re-renders `bot.env` and restarts the container.
 
 ## Configuration
 

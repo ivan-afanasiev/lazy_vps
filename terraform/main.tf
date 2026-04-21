@@ -171,7 +171,16 @@ resource "aws_instance" "vps" {
     telegram_allowed_users = jsonencode(var.telegram_allowed_users)
     aws_region             = var.aws_region
     bot_py                 = file("${path.module}/scripts/bot.py")
+    install_bot_sh         = file("${path.module}/scripts/install-bot.sh")
   })
+
+  # user_data runs only on first boot. Changing it would force a full instance
+  # replacement (new IP, new Xray Reality key => every VLESS link breaks).
+  # Use `make bot-install` / `make bot-update` to push bot changes to a running
+  # VPS without touching Xray or Telemt.
+  lifecycle {
+    ignore_changes = [user_data, user_data_base64]
+  }
 
   tags = {
     Name = "lazy-vps"
