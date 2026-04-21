@@ -161,7 +161,10 @@ resource "aws_instance" "vps" {
     volume_type = "gp3"
   }
 
-  user_data = templatefile("${path.module}/scripts/setup-xray.sh", {
+  # user_data is limited to 16 KB uncompressed but cloud-init accepts gzip.
+  # We exceed 16 KB because of the embedded bot.py + install-bot.sh, so we
+  # gzip and base64-encode (user_data_base64 has a larger effective limit).
+  user_data_base64 = base64gzip(templatefile("${path.module}/scripts/setup-xray.sh", {
     xray_uuid              = random_uuid.xray_uuid.result
     xray_short_id          = random_id.xray_short_id.hex
     camouflage_domain      = var.camouflage_domain
@@ -172,7 +175,7 @@ resource "aws_instance" "vps" {
     aws_region             = var.aws_region
     bot_py                 = file("${path.module}/scripts/bot.py")
     install_bot_sh         = file("${path.module}/scripts/install-bot.sh")
-  })
+  }))
 
   # user_data runs only on first boot. Changing it would force a full instance
   # replacement (new IP, new Xray Reality key => every VLESS link breaks).
