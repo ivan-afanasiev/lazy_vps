@@ -188,6 +188,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
+      # Telemt periodically flushes a runtime snapshot (beobachten.txt)
+      # into /etc/telemt/. With read_only: true this produces a constant
+      # stream of "Read-only file system" warnings in `docker logs`. We
+      # don't rely on that state file (our /users parses docker logs),
+      # so a tmpfs is enough to silence the warning.
+      - /etc/telemt:rw,nosuid,nodev,noexec,size=8m
     deploy:
       resources:
         limits:

@@ -222,6 +222,24 @@ fix-pubkey: ## Re-derive /usr/local/etc/xray/public_key.txt from the private key
 	@echo "Done. If the bot was already running, restart it so it re-reads (not strictly needed, it reads on demand):"
 	@echo "  make bot-restart"
 
+.PHONY: fix-telemt-warnings
+fix-telemt-warnings: ## Silence telemt's /etc/telemt/beobachten.txt warnings on an already-deployed VPS
+	@set -e; \
+	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	echo "Patching telemt docker-compose.yml on $$IP and restarting telemt…"; \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP '\
+		set -e; \
+		F=/opt/telemt/docker-compose.yml; \
+		if sudo grep -q "/etc/telemt:rw" "$$F"; then \
+			echo "already patched"; \
+		else \
+			sudo sed -i "/- \/tmp:rw,nosuid,nodev,noexec,size=16m/a\\      - /etc/telemt:rw,nosuid,nodev,noexec,size=8m" "$$F"; \
+			echo "patched"; \
+		fi; \
+		cd /opt/telemt && sudo docker compose up -d'
+	@echo ""
+	@echo "Done. Telemt restarted with /etc/telemt as tmpfs — the warnings should stop."
+
 .PHONY: tg-link
 tg-link: ## Get the Telegram proxy link (run ~4 min after deploy)
 	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
