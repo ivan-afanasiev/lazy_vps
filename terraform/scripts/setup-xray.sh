@@ -30,8 +30,13 @@ bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release
 
 # --- Generate x25519 keypair ---
 KEY_OUTPUT=$(/usr/local/bin/xray x25519)
-PRIVATE_KEY=$(echo "$KEY_OUTPUT" | awk '/PrivateKey:/{print $2}')
-PUBLIC_KEY=$(echo "$KEY_OUTPUT" | awk '/Password:/{print $2}')
+PRIVATE_KEY=$(echo "$KEY_OUTPUT" | awk -F': *' '/^(PrivateKey|Private key)/{print $2; exit}')
+PUBLIC_KEY=$(echo "$KEY_OUTPUT"  | awk -F': *' '/^(Password|PublicKey|Public key)/{print $2; exit}')
+if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
+  echo "FATAL: could not parse xray x25519 output:" >&2
+  echo "$KEY_OUTPUT" >&2
+  exit 1
+fi
 
 # --- Write Xray Config ---
 cat > /usr/local/etc/xray/config.json <<XRAYCONF

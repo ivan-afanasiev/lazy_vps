@@ -204,6 +204,24 @@ vless-link: ## Get the VLESS connection link (run ~3 min after deploy)
 	echo "For Telegram proxy link, run: make tg-link" || \
 	{ echo "❌ Could not retrieve public key. Server may still be starting — wait a minute and try again."; exit 1; }
 
+.PHONY: fix-pubkey
+fix-pubkey: ## Re-derive /usr/local/etc/xray/public_key.txt from the private key in config.json (no key rotation)
+	@set -e; \
+	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	echo "Re-deriving Xray public key on $$IP…"; \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'set -e; \
+		PRIV=$$(sudo grep -oE "\"privateKey\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" /usr/local/etc/xray/config.json | head -n1 | sed -E "s/.*\"([^\"]+)\"\$$/\\1/"); \
+		if [ -z "$$PRIV" ]; then echo "could not find privateKey in config.json" >&2; exit 1; fi; \
+		OUT=$$(/usr/local/bin/xray x25519 -i "$$PRIV"); \
+		PUB=$$(echo "$$OUT" | awk -F": *" "/^(Password|PublicKey|Public key)/{print \$$2; exit}"); \
+		if [ -z "$$PUB" ]; then echo "could not parse xray x25519 output:"; echo "$$OUT"; exit 1; fi; \
+		echo "$$PUB" | sudo tee /usr/local/etc/xray/public_key.txt >/dev/null; \
+		sudo chmod 644 /usr/local/etc/xray/public_key.txt; \
+		echo "public_key.txt =" "$$PUB"'
+	@echo ""
+	@echo "Done. If the bot was already running, restart it so it re-reads (not strictly needed, it reads on demand):"
+	@echo "  make bot-restart"
+
 .PHONY: tg-link
 tg-link: ## Get the Telegram proxy link (run ~4 min after deploy)
 	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
