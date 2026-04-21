@@ -36,6 +36,22 @@ if [ -z "$BOT_PY_SRC" ]; then
   fi
 fi
 
+# --- Wait for any running apt / cloud-init to finish so we don't race
+#     the dpkg lock. On a freshly-booted VPS, user-data is still running
+#     apt-get upgrade when `make bot-install` is run for the first time.
+if command -v cloud-init >/dev/null 2>&1; then
+  cloud-init status --wait >/dev/null 2>&1 || true
+fi
+for i in $(seq 1 60); do
+  if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     && ! fuser /var/lib/apt/lists/lock  >/dev/null 2>&1 \
+     && ! fuser /var/lib/dpkg/lock       >/dev/null 2>&1; then
+    break
+  fi
+  echo "Waiting for apt/dpkg lock (attempt $i/60)…"
+  sleep 5
+done
+
 # --- Ensure Docker is installed (no-op if it already is) ---
 if ! command -v docker >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
