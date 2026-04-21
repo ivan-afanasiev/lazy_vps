@@ -19,6 +19,7 @@ id_*
 
 # Env
 .env
+.envrc
 
 # Claude
 .claude/setting.json

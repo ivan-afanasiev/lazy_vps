@@ -67,8 +67,60 @@ make setup-log    # View cloud-init setup log
 make output       # Show all Terraform outputs
 make plan         # Preview changes without applying
 make destroy      # Tear everything down
+make bot-status   # Show Telegram bot container status
+make bot-logs     # Follow Telegram bot logs
+make bot-restart  # Restart the Telegram bot container
 make help         # Show all available commands
 ```
+
+## Telegram Bot
+
+The VPS runs a small Telegram bot (`lazy-vps-bot`) that exposes the same
+monitoring / link / status commands as the Makefile, for when you're not at
+your laptop.
+
+### Setup
+
+1. **Create a bot** with [@BotFather](https://t.me/BotFather) on Telegram. Send
+   `/newbot`, follow prompts, copy the token.
+2. **Find your user ID** (recommended) by messaging
+   [@userinfobot](https://t.me/userinfobot). Usernames also work, but they can
+   be changed by the user — numeric IDs cannot.
+3. **Export the two env vars** before `make deploy`:
+
+   ```bash
+   export TF_VAR_telegram_bot_token='123456:ABCDEF...'
+   # Numeric IDs and/or usernames, JSON array:
+   export TF_VAR_telegram_allowed_users='["123456789","alice"]'
+   ```
+
+   Or copy `.envrc.example` to `.envrc` and use [direnv](https://direnv.net/)
+   (the `.envrc` file is gitignored).
+
+4. `make deploy`. Cloud-init builds and starts the bot container. After
+   ~4–5 minutes, message your bot `/start` — it will respond with the command
+   list.
+
+### Bot commands
+
+- `/vless` — VLESS connection link
+- `/tg` — Telegram proxy link
+- `/status` — Xray service status
+- `/tgstatus` — Telemt container status + recent logs
+- `/traffic` — month-to-date EC2 network traffic (CloudWatch)
+- `/destinations [N]` — top N destinations this month (default 20, 0 = all)
+- `/users [N]` — top N client IPs per service this month (default 10, 0 = all)
+- `/restart xray|telemt` — restart a service
+- `/help` — list commands
+
+Only the users in `TF_VAR_telegram_allowed_users` can invoke commands; everyone
+else gets "Not authorized." and the attempt is logged (see `make bot-logs`).
+
+To change the allowed-users list without re-deploying the full VPS, update
+`TF_VAR_telegram_allowed_users` and run `make deploy` — Terraform will detect
+the `user_data` change and prompt you. Note that re-applying `user_data` on an
+existing instance will replace it; for quick edits, SSH in and edit
+`/opt/lazy-vps-bot/bot.env`, then `make bot-restart`.
 
 ## Configuration
 

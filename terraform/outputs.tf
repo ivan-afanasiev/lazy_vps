@@ -47,3 +47,10 @@ output "get_tg_link" {
     ssh ubuntu@${aws_eip.vps.public_ip} 'cat /opt/telemt/tg_link.txt'
   EOT
 }
+
+output "telegram_bot_status" {
+  description = "How to check the Telegram bot running on the VPS"
+  value       = <<-EOT
+    ssh ubuntu@${aws_eip.vps.public_ip} 'sudo docker ps -f name=lazy-vps-bot && sudo docker logs --tail=30 lazy-vps-bot'
+  EOT
+}

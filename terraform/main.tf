@@ -91,12 +91,68 @@ resource "aws_key_pair" "ssh" {
   public_key = file(pathexpand(var.ssh_public_key_path))
 }
 
+# --- IAM Role for EC2 (used by the Telegram bot on the instance) ---
+
+data "aws_iam_policy_document" "ec2_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "vps" {
+  name               = "lazy-vps-role"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+
+  tags = {
+    Name = "lazy-vps"
+  }
+}
+
+# Minimal permissions the bot needs to answer `/traffic`.
+# ec2:DescribeInstances does not support resource-level restrictions, so it's "*".
+# cloudwatch:GetMetricStatistics also does not support resource-level restrictions.
+data "aws_iam_policy_document" "vps_bot" {
+  statement {
+    sid    = "CloudWatchReadMetrics"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:GetMetricStatistics",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "DescribeOwnInstance"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeInstances",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "vps_bot" {
+  name   = "lazy-vps-bot"
+  role   = aws_iam_role.vps.id
+  policy = data.aws_iam_policy_document.vps_bot.json
+}
+
+resource "aws_iam_instance_profile" "vps" {
+  name = "lazy-vps-profile"
+  role = aws_iam_role.vps.name
+}
+
 # --- EC2 Instance ---
 
 resource "aws_instance" "vps" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = var.instance_type
-  key_name      = aws_key_pair.ssh.key_name
+  ami                  = data.aws_ami.ubuntu.id
+  instance_type        = var.instance_type
+  key_name             = aws_key_pair.ssh.key_name
+  iam_instance_profile = aws_iam_instance_profile.vps.name
 
   vpc_security_group_ids = [aws_security_group.vps.id]
 
@@ -106,11 +162,15 @@ resource "aws_instance" "vps" {
   }
 
   user_data = templatefile("${path.module}/scripts/setup-xray.sh", {
-    xray_uuid          = random_uuid.xray_uuid.result
-    xray_short_id      = random_id.xray_short_id.hex
-    camouflage_domain  = var.camouflage_domain
-    mtproto_port       = var.mtproto_port
-    mtproto_mask_domain = var.mtproto_mask_domain
+    xray_uuid              = random_uuid.xray_uuid.result
+    xray_short_id          = random_id.xray_short_id.hex
+    camouflage_domain      = var.camouflage_domain
+    mtproto_port           = var.mtproto_port
+    mtproto_mask_domain    = var.mtproto_mask_domain
+    telegram_bot_token     = var.telegram_bot_token
+    telegram_allowed_users = jsonencode(var.telegram_allowed_users)
+    aws_region             = var.aws_region
+    bot_py                 = file("${path.module}/scripts/bot.py")
   })
 
   tags = {

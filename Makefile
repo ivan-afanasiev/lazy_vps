@@ -118,6 +118,21 @@ check: ## Check that all prerequisites are installed
 	@echo "  ✓ SSH key found at $(SSH_KEY).pub"
 	@echo "All good! Run 'make deploy' to launch your VPS."
 
+.PHONY: check-bot-env
+check-bot-env: ## Check that Telegram bot env vars are set
+	@[ -n "$$TF_VAR_telegram_bot_token" ] || { \
+		echo "❌ TF_VAR_telegram_bot_token is not set."; \
+		echo "   Create a bot with @BotFather, then:"; \
+		echo "     export TF_VAR_telegram_bot_token='123456:ABCDEF...'"; \
+		exit 1; }
+	@[ -n "$$TF_VAR_telegram_allowed_users" ] || { \
+		echo "❌ TF_VAR_telegram_allowed_users is not set."; \
+		echo "   Example:"; \
+		echo "     export TF_VAR_telegram_allowed_users='[\"alice\",\"123456789\"]'"; \
+		exit 1; }
+	@echo "  ✓ TF_VAR_telegram_bot_token is set"
+	@echo "  ✓ TF_VAR_telegram_allowed_users=$$TF_VAR_telegram_allowed_users"
+
 .PHONY: aws-configure
 aws-configure: ## Configure AWS CLI credentials
 	aws configure
@@ -142,7 +157,7 @@ plan: ## Preview changes without applying
 	cd $(TF_DIR) && terraform plan
 
 .PHONY: deploy
-deploy: ## Deploy the VPS (terraform apply)
+deploy: check-bot-env ## Deploy the VPS (terraform apply)
 	cd $(TF_DIR) && terraform apply
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -228,6 +243,25 @@ setup-log: ## View the cloud-init setup log
 status: ## Check if Xray is running on the VPS
 	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
 	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo systemctl status xray --no-pager'
+
+# ──────────────────────────────────────────────
+# Telegram Bot
+# ──────────────────────────────────────────────
+
+.PHONY: bot-status
+bot-status: ## Show lazy-vps-bot container status and recent logs
+	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker ps -f name=lazy-vps-bot && echo "" && sudo docker logs --tail=30 lazy-vps-bot'
+
+.PHONY: bot-logs
+bot-logs: ## Follow lazy-vps-bot container logs
+	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker logs -f --tail=50 lazy-vps-bot'
+
+.PHONY: bot-restart
+bot-restart: ## Restart the lazy-vps-bot container
+	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker restart lazy-vps-bot'
 
 # ──────────────────────────────────────────────
 # Monitoring

@@ -39,3 +39,31 @@ variable "mtproto_mask_domain" {
   type        = string
   default     = "www.yandex.ru"
 }
+
+# --- Telegram Bot ---
+# Both variables below are sourced from environment variables:
+#   export TF_VAR_telegram_bot_token='123456:ABCDEF...'
+#   export TF_VAR_telegram_allowed_users='["alice","bob","123456789"]'
+# Terraform reads any TF_VAR_<name> automatically.
+
+variable "telegram_bot_token" {
+  description = "Telegram bot token from @BotFather (set via TF_VAR_telegram_bot_token)"
+  type        = string
+  sensitive   = true
+}
+
+variable "telegram_allowed_users" {
+  description = <<-EOT
+    List of Telegram users allowed to use the bot. Each entry may be:
+      - a numeric Telegram user ID (e.g. "123456789")
+      - a username, with or without leading '@' (e.g. "alice" or "@alice")
+    Usernames match case-insensitively. Set via TF_VAR_telegram_allowed_users
+    as a JSON array, e.g. '["alice","bob","123456789"]'.
+  EOT
+  type        = list(string)
+
+  validation {
+    condition     = length(var.telegram_allowed_users) > 0
+    error_message = "telegram_allowed_users must not be empty. Set TF_VAR_telegram_allowed_users, e.g. '[\"alice\",\"123456789\"]'."
+  }
+}

@@ -1,0 +1,10 @@
+# Telegram bot credentials (see README "Telegram Bot")
+# Copy to .envrc and adjust, then `direnv allow` — or just `source .envrc`.
+
+# From @BotFather
+export TF_VAR_telegram_bot_token='123456:REPLACE_WITH_YOUR_TOKEN'
+
+# Telegram usernames (without @) or numeric user IDs; JSON array.
+# Numeric IDs are immutable, usernames are user-changeable — prefer IDs.
+# Get your numeric ID by messaging @userinfobot on Telegram.
+export TF_VAR_telegram_allowed_users='["alice","123456789"]'
