@@ -221,7 +221,7 @@ echo "Telegram link: $TG_LINK"
 # lazy-vps-bot + lazy-vps-ctl
 # ============================================
 # We write bot.py and install-bot.sh to disk (both injected verbatim via
-# Terraform ${...} expansion, NOT interpreted as shell), then run the
+# Terraform template expansion, NOT interpreted as shell), then run the
 # installer with the bot/auth env vars set. The installer is the same code
 # path used by `make bot-install` on an already-running VPS.
 
