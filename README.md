@@ -247,13 +247,14 @@ These domains are the **cover story** your traffic presents to anyone inspecting
 
 ### AWS region
 
-You pick this in `terraform.tfvars`. The closer to your users, the lower the latency. For users in Russia/CIS in 2026:
+You can override this in `terraform.tfvars`. The default is `eu-north-1` (Stockholm) — currently the most reliable AWS region for users in Russia/CIS in 2026 (lighter TSPU throttling than Frankfurt). The closer to your users, the lower the latency. Other reasonable picks for RU/CIS:
 
-- **`eu-north-1` (Stockholm)** — currently the most reliable; lighter throttling on AWS ranges than Frankfurt.
 - **`me-central-1` (UAE)** — different IP reputation, geographically reasonable.
-- `eu-central-1` (Frankfurt) — lowest latency, but its AWS IP ranges have been heavily throttled on TSPU (the Russian DPI infrastructure) since 2024-2025.
+- `eu-central-1` (Frankfurt) — lowest latency, but its AWS IP ranges have been heavily throttled on TSPU since 2024-2025. Avoid unless you've confirmed it works for your users.
 
-For users in Western Europe, `eu-west-1` (Ireland). See `docs/russia-whitelist-era.md` for the full reasoning.
+For users in Western Europe, set `aws_region = "eu-west-1"` (Ireland). See `docs/russia-whitelist-era.md` for the full reasoning.
+
+> **Changing region on an existing deployment** destroys the EC2 + EIP and recreates them — you get a new public IP and fresh Reality keys, so every VLESS / AmneziaWG link breaks. If you have a deployment running and don't want to rotate, pin the old region explicitly in `terraform/terraform.tfvars` *before* the next `make deploy`.
 
 ---
 

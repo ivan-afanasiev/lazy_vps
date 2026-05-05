@@ -64,12 +64,15 @@ closer to a protocol allow-list. The things that matter for us:
 
 ### 1. Quick win — swap region + camouflage domain (~30 min, no code)
 
-> **Status (2026-05): partially implemented.** The default
-> `camouflage_domain` is now `www.microsoft.com` (CDN-backed, typical TLS
-> handshake) and the README's "AWS region" section was rewritten to
-> recommend `eu-north-1` for RU users. The actual `aws_region` default in
-> `variables.tf` is still `eu-central-1` to avoid silently moving existing
-> deployments — set it explicitly in `terraform/terraform.tfvars`.
+> **Status (2026-05): implemented as new defaults.** `camouflage_domain`
+> is now `dzen.ru` (in-RU reachable, typical TLS 1.3 handshake) and
+> `aws_region` is now `eu-north-1` (Stockholm, lighter TSPU throttling
+> than Frankfurt) in `variables.tf`. Existing deployments with a pinned
+> region in `terraform/terraform.tfvars` are unaffected; running
+> deployments where the region was on the default and the state still
+> says `eu-central-1` will diff against the new default — `make plan`
+> first to see exactly what Terraform wants to do (changing `aws_region`
+> destroys + recreates the EC2 + EIP, so every VLESS link breaks).
 
 Edit `terraform/terraform.tfvars`, then `make destroy && make deploy`, then
 retest from a real RU client.

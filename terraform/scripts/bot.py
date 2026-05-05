@@ -50,7 +50,7 @@ logging.basicConfig(
 log = logging.getLogger("lazy-vps-bot")
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-AWS_REGION = os.environ.get("AWS_REGION", "eu-central-1")
+AWS_REGION = os.environ.get("AWS_REGION", "eu-north-1")
 XRAY_UUID = os.environ.get("XRAY_UUID", "")
 XRAY_SHORT_ID = os.environ.get("XRAY_SHORT_ID", "")
 CAMOUFLAGE_DOMAIN = os.environ.get("CAMOUFLAGE_DOMAIN", "")

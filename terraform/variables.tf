@@ -1,7 +1,19 @@
 variable "aws_region" {
-  description = "AWS region to deploy in"
+  description = <<-EOT
+    AWS region to deploy in. Default eu-north-1 (Stockholm) — for users in
+    Russia/CIS in 2026 it has lighter TSPU throttling on its IP ranges
+    than eu-central-1 (Frankfurt). For users in Western Europe, set
+    eu-west-1 (Ireland). See docs/russia-whitelist-era.md.
+
+    Note on switching regions on an EXISTING deployment: changing this
+    forces Terraform to destroy the EC2 + EIP and re-create them in the
+    new region. You'll get a new public IP and (because user_data re-runs
+    on a fresh instance) new Reality keys, so every VLESS / AmneziaWG
+    link becomes invalid. If you don't want that, pin the old region
+    explicitly in terraform/terraform.tfvars.
+  EOT
   type        = string
-  default     = "eu-central-1"
+  default     = "eu-north-1"
 }
 
 variable "instance_type" {

@@ -340,7 +340,7 @@ bot-install: check-bot-env ## Install/upgrade the bot on an already-deployed VPS
 	XRAY_SHORT_ID=$$(cd $(TF_DIR) && terraform output -raw xray_short_id); \
 	CAMOUFLAGE_DOMAIN=$$(cd $(TF_DIR) && terraform output -raw camouflage_domain); \
 	MTPROTO_PORT=$$(cd $(TF_DIR) && terraform output -raw mtproto_port); \
-	AWS_REGION=$$(cd $(TF_DIR) && terraform output -raw aws_region 2>/dev/null || echo eu-central-1); \
+	AWS_REGION=$$(cd $(TF_DIR) && terraform output -raw aws_region 2>/dev/null || echo eu-north-1); \
 	echo "Uploading bot.py and install-bot.sh to $$HOST…"; \
 	scp -q -o StrictHostKeyChecking=no \
 		$(TF_DIR)/scripts/bot.py \
@@ -423,7 +423,7 @@ traffic: ## Show network traffic used this month (CloudWatch, month-to-date)
 		printf "  Free left:    %6.2f GB\n", free_left; \
 		printf "  Billable:     %6.2f GB  @ $$%.2f/GB\n", billable, rate; \
 		printf "  Est. cost:    $$%.2f\n", cost; \
-		printf "\n  Note: rate assumes first 10 TB tier (most regions, incl. eu-central-1).\n"; \
+		printf "\n  Note: rate assumes first 10 TB tier (same in eu-north-1, eu-central-1, eu-west-*).\n"; \
 		printf "        EC2 instance-hours and EBS storage are billed separately.\n"; \
 		printf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" \
 	}'
