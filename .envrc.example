@@ -8,3 +8,21 @@ export TF_VAR_telegram_bot_token='123456:REPLACE_WITH_YOUR_TOKEN'
 # Numeric IDs are immutable, usernames are user-changeable — prefer IDs.
 # Get your numeric ID by messaging @userinfobot on Telegram.
 export TF_VAR_telegram_allowed_users='["alice","123456789"]'
+
+# --- Tailscale (optional) ---
+# Set this to join the VPS to your tailnet on first boot. When set, public
+# SSH (port 22) is dropped from the security group — you SSH over Tailscale
+# instead. Leave unset (or empty) to disable.
+#
+# Generate a key at https://login.tailscale.com/admin/settings/keys
+# Recommended: Reusable=off, Ephemeral=off, Pre-approved=on.
+# export TF_VAR_tailscale_auth_key='tskey-auth-XXXXXXXXXXX-XXXXXXXXXXXX'
+# export TF_VAR_tailscale_hostname='lazy-vps'
+# export TF_VAR_tailscale_tags='["tag:lazy-vps"]'
+
+# --- AmneziaWG (optional) ---
+# Set to true to enable AmneziaWG (obfuscated WireGuard) alongside Reality
+# and MTProto. Adds a UDP/51820 inbound to the security group. Leave unset
+# (or false) to disable. See README "Amnezia VPN (optional)" for context.
+# export TF_VAR_amnezia_enabled=true
+# export TF_VAR_amnezia_port=51820

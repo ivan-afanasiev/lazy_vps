@@ -4,6 +4,18 @@ SHELL := /bin/bash
 TF_DIR := terraform
 SSH_KEY := $(HOME)/.ssh/id_ed25519
 
+# Resolve which host the SSH-using targets should connect to. When Tailscale
+# is configured for this deployment the public SSH port is closed, so we MUST
+# go over the tailnet. Your local machine must also be on the tailnet; if it
+# isn't, `tailscale status` on your laptop will tell you.
+# When Tailscale is not configured, fall back to the public Elastic IP.
+RESOLVE_HOST = TS_ENABLED=$$(cd $(TF_DIR) && terraform output -raw tailscale_enabled 2>/dev/null || echo false); \
+	if [ "$$TS_ENABLED" = "true" ]; then \
+		HOST=$$(cd $(TF_DIR) && terraform output -raw tailscale_hostname 2>/dev/null || echo lazy-vps); \
+	else \
+		HOST=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	fi
+
 # Remote script fed to `ssh ... bash -s` by the `users` target.
 # Expects env vars: MONTH_START (Telemt --since), XRAY_DATE (awk prefix), TOP.
 define USERS_SCRIPT
@@ -164,8 +176,9 @@ deploy: check-bot-env ## Deploy the VPS (terraform apply)
 	@echo "VPS deployed! Wait 3-4 minutes for setup"
 	@echo "to finish, then run:"
 	@echo ""
-	@echo "  make vless-link   # VPN connection link"
-	@echo "  make tg-link      # Telegram proxy link"
+	@echo "  make vless-link    # VPN connection link"
+	@echo "  make tg-link       # Telegram proxy link"
+	@echo "  make amnezia-link  # AmneziaWG client config (only if enabled)"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 .PHONY: destroy
@@ -183,10 +196,11 @@ output: ## Show all Terraform outputs
 .PHONY: vless-link
 vless-link: ## Get the VLESS connection link (run ~3 min after deploy)
 	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
+	$(RESOLVE_HOST) && SSH_HOST=$$HOST && \
 	UUID=$$(cd $(TF_DIR) && terraform output -raw xray_uuid) && \
 	SID=$$(cd $(TF_DIR) && terraform output -raw xray_short_id) && \
 	SNI=$$(cd $(TF_DIR) && terraform output -raw camouflage_domain) && \
-	PBK=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$IP 'cat /usr/local/etc/xray/public_key.txt' 2>/dev/null) && \
+	PBK=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$SSH_HOST 'cat /usr/local/etc/xray/public_key.txt' 2>/dev/null) && \
 	LINK="vless://$$UUID@$$IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$$SNI&fp=chrome&pbk=$$PBK&sid=$$SID&type=tcp#lazy-vps" && \
 	echo "" && \
 	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
@@ -206,8 +220,8 @@ vless-link: ## Get the VLESS connection link (run ~3 min after deploy)
 
 .PHONY: tg-link
 tg-link: ## Get the Telegram proxy link (run ~4 min after deploy)
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	TG_LINK=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$IP 'cat /opt/telemt/tg_link.txt' 2>/dev/null) && \
+	@$(RESOLVE_HOST) && \
+	TG_LINK=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$HOST 'cat /opt/telemt/tg_link.txt' 2>/dev/null) && \
 	echo "" && \
 	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
 	echo "Telegram Proxy Link:" && \
@@ -219,30 +233,85 @@ tg-link: ## Get the Telegram proxy link (run ~4 min after deploy)
 	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" || \
 	{ echo "❌ Could not retrieve Telegram link. Server may still be starting — wait a minute and try again."; exit 1; }
 
+.PHONY: amnezia-link
+amnezia-link: ## Get the AmneziaWG vpn:// link + .conf (run ~5-6 min after deploy)
+	@AMN_ENABLED=$$(cd $(TF_DIR) && terraform output -raw amnezia_enabled 2>/dev/null || echo false); \
+	if [ "$$AMN_ENABLED" != "true" ]; then \
+		echo "❌ AmneziaWG is disabled."; \
+		echo "   Set 'export TF_VAR_amnezia_enabled=true' in .envrc and re-run 'make deploy'."; \
+		exit 1; \
+	fi; \
+	$(RESOLVE_HOST); \
+	OUT_CONF="amnezia-client.conf"; \
+	OUT_URI="amnezia-client.vpn"; \
+	REMOTE_CMD='sudo cat /opt/amnezia/vpn.uri && echo "---" && sudo cat /opt/amnezia/client.conf'; \
+	BLOB=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$HOST "$$REMOTE_CMD" 2>/dev/null); \
+	if [ -z "$$BLOB" ]; then \
+		echo "❌ Could not retrieve AmneziaWG config. Server may still be starting — wait a minute and try again."; \
+		echo "   (AmneziaWG installs *after* Xray and Telemt, so it's the last thing to come up.)"; \
+		exit 1; \
+	fi; \
+	URI=$$(printf '%s\n' "$$BLOB" | awk '/^---$$/{exit} {print}'); \
+	CONF=$$(printf '%s\n' "$$BLOB" | awk 'p{print} /^---$$/{p=1}'); \
+	printf '%s\n' "$$URI"  > "$$OUT_URI"; \
+	printf '%s\n' "$$CONF" > "$$OUT_CONF"; \
+	echo ""; \
+	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; \
+	echo "AmneziaWG link (one-tap import in Amnezia VPN app):"; \
+	echo ""; \
+	echo "$$URI"; \
+	echo ""; \
+	echo "Saved:"; \
+	echo "  $$OUT_URI   ← Amnezia VPN app: paste / scan QR / send the .vpn file"; \
+	echo "  $$OUT_CONF  ← AmneziaWG / WireGuard apps: import as config file"; \
+	echo ""; \
+	echo "QR code (for phone import): make amnezia-qr"; \
+	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+.PHONY: amnezia-qr
+amnezia-qr: ## Download the AmneziaWG QR code as amnezia-client.png
+	@AMN_ENABLED=$$(cd $(TF_DIR) && terraform output -raw amnezia_enabled 2>/dev/null || echo false); \
+	if [ "$$AMN_ENABLED" != "true" ]; then \
+		echo "❌ AmneziaWG is disabled. Set TF_VAR_amnezia_enabled=true and re-deploy."; exit 1; \
+	fi; \
+	$(RESOLVE_HOST); \
+	scp -q -o StrictHostKeyChecking=no ubuntu@$$HOST:/opt/amnezia/client.png amnezia-client.png 2>/dev/null && \
+	echo "Saved QR code to amnezia-client.png" || \
+	{ echo "❌ Could not retrieve QR. Server may still be starting."; exit 1; }
+
+.PHONY: amnezia-status
+amnezia-status: ## Check AmneziaWG interface status (peers, last handshake, transfer)
+	@AMN_ENABLED=$$(cd $(TF_DIR) && terraform output -raw amnezia_enabled 2>/dev/null || echo false); \
+	if [ "$$AMN_ENABLED" != "true" ]; then \
+		echo "❌ AmneziaWG is disabled."; exit 1; \
+	fi; \
+	$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo systemctl is-active awg-quick@awg0 && sudo awg show awg0'
+
 .PHONY: tg-status
 tg-status: ## Check Telemt (Telegram proxy) container status
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker ps -f name=telemt && echo "" && sudo docker compose -f /opt/telemt/docker-compose.yml logs --tail=20'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo docker ps -f name=telemt && echo "" && sudo docker compose -f /opt/telemt/docker-compose.yml logs --tail=20'
 
 .PHONY: ssh
 ssh: ## SSH into the VPS
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST
 
 .PHONY: logs
 logs: ## Stream Xray logs from the VPS
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo journalctl -u xray -f'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo journalctl -u xray -f'
 
 .PHONY: setup-log
 setup-log: ## View the cloud-init setup log
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'cat /var/log/xray-setup.log'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'cat /var/log/xray-setup.log'
 
 .PHONY: status
 status: ## Check if Xray is running on the VPS
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo systemctl status xray --no-pager'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo systemctl status xray --no-pager'
 
 # ──────────────────────────────────────────────
 # Telegram Bot
@@ -250,35 +319,35 @@ status: ## Check if Xray is running on the VPS
 
 .PHONY: bot-status
 bot-status: ## Show lazy-vps-bot container status and recent logs
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker ps -f name=lazy-vps-bot && echo "" && sudo docker logs --tail=30 lazy-vps-bot'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo docker ps -f name=lazy-vps-bot && echo "" && sudo docker logs --tail=30 lazy-vps-bot'
 
 .PHONY: bot-logs
 bot-logs: ## Follow lazy-vps-bot container logs
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker logs -f --tail=50 lazy-vps-bot'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo docker logs -f --tail=50 lazy-vps-bot'
 
 .PHONY: bot-restart
 bot-restart: ## Restart the lazy-vps-bot container
-	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo docker restart lazy-vps-bot'
+	@$(RESOLVE_HOST) && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo docker restart lazy-vps-bot'
 
 .PHONY: bot-install
 bot-install: check-bot-env ## Install/upgrade the bot on an already-deployed VPS (no reboot, no Xray/Telemt impact)
 	@set -e; \
-	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	$(RESOLVE_HOST); \
 	XRAY_UUID=$$(cd $(TF_DIR) && terraform output -raw xray_uuid); \
 	XRAY_SHORT_ID=$$(cd $(TF_DIR) && terraform output -raw xray_short_id); \
 	CAMOUFLAGE_DOMAIN=$$(cd $(TF_DIR) && terraform output -raw camouflage_domain); \
 	MTPROTO_PORT=$$(cd $(TF_DIR) && terraform output -raw mtproto_port); \
 	AWS_REGION=$$(cd $(TF_DIR) && terraform output -raw aws_region 2>/dev/null || echo eu-central-1); \
-	echo "Uploading bot.py and install-bot.sh to $$IP…"; \
+	echo "Uploading bot.py and install-bot.sh to $$HOST…"; \
 	scp -q -o StrictHostKeyChecking=no \
 		$(TF_DIR)/scripts/bot.py \
 		$(TF_DIR)/scripts/install-bot.sh \
-		ubuntu@$$IP:/tmp/; \
+		ubuntu@$$HOST:/tmp/; \
 	echo "Running installer remotely…"; \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP "sudo mkdir -p /opt/lazy-vps-bot && \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST "sudo mkdir -p /opt/lazy-vps-bot && \
 		sudo mv /tmp/bot.py /opt/lazy-vps-bot/bot.py && \
 		sudo mv /tmp/install-bot.sh /opt/lazy-vps-bot/install-bot.sh && \
 		sudo chmod 755 /opt/lazy-vps-bot/install-bot.sh && \
@@ -301,10 +370,10 @@ bot-install: check-bot-env ## Install/upgrade the bot on an already-deployed VPS
 .PHONY: bot-update
 bot-update: ## Fast path: sync bot.py only and restart the container (no config re-render)
 	@set -e; \
-	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
-	echo "Uploading bot.py to $$IP…"; \
-	scp -q -o StrictHostKeyChecking=no $(TF_DIR)/scripts/bot.py ubuntu@$$IP:/tmp/bot.py; \
-	ssh -o StrictHostKeyChecking=no ubuntu@$$IP 'sudo mv /tmp/bot.py /opt/lazy-vps-bot/bot.py && \
+	$(RESOLVE_HOST); \
+	echo "Uploading bot.py to $$HOST…"; \
+	scp -q -o StrictHostKeyChecking=no $(TF_DIR)/scripts/bot.py ubuntu@$$HOST:/tmp/bot.py; \
+	ssh -o StrictHostKeyChecking=no ubuntu@$$HOST 'sudo mv /tmp/bot.py /opt/lazy-vps-bot/bot.py && \
 		sudo chmod 644 /opt/lazy-vps-bot/bot.py && \
 		cd /opt/lazy-vps-bot && sudo docker compose up -d --build'
 	@echo "Bot updated."
@@ -363,13 +432,14 @@ traffic: ## Show network traffic used this month (CloudWatch, month-to-date)
 destinations: ## Top destination domains accessed via VPN this month (TOP=N for count, TOP=0 for all)
 	@set -e; \
 	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	$(RESOLVE_HOST); SSH_HOST=$$HOST; \
 	MONTH_LABEL=$$(date -u +"%B %Y"); \
 	XRAY_DATE=$$(date -u +"%Y/%m/01"); \
 	TOP=$${TOP:-20}; \
 	printf "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"; \
 	printf "Destinations for %s (month-to-date)\n" "$$MONTH_LABEL"; \
 	printf "Server: %s\n" "$$IP"; \
-	DATA=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$IP \
+	DATA=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$SSH_HOST \
 		"if sudo test -s /var/log/xray/access.log; then \
 			sudo awk -v start='$$XRAY_DATE' '\$$1 >= start && \$$5 == \"accepted\" {print \$$6}' /var/log/xray/access.log \
 			| sed -E 's/^[^:]+://; s/:[0-9]+\$$//; s/^\\[|\\]\$$//g' \
@@ -395,6 +465,7 @@ destinations: ## Top destination domains accessed via VPN this month (TOP=N for 
 users: ## List unique client IPs that used VPN/TG proxy this month (TOP=N for count, TOP=0 for all)
 	@set -e; \
 	IP=$$(cd $(TF_DIR) && terraform output -raw server_ip); \
+	$(RESOLVE_HOST); SSH_HOST=$$HOST; \
 	MONTH_LABEL=$$(date -u +"%B %Y"); \
 	MONTH_START=$$(date -u +"%Y-%m-01T00:00:00"); \
 	XRAY_DATE=$$(date -u +"%Y/%m/01"); \
@@ -402,11 +473,17 @@ users: ## List unique client IPs that used VPN/TG proxy this month (TOP=N for co
 	printf "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"; \
 	printf "Users for %s (month-to-date)\n" "$$MONTH_LABEL"; \
 	printf "Server: %s\n" "$$IP"; \
-	ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$IP \
+	ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$SSH_HOST \
 		"MONTH_START='$$MONTH_START' XRAY_DATE='$$XRAY_DATE' TOP='$$TOP' bash -s" \
 		<<< "$$USERS_SCRIPT"; \
 	printf "\n  Showing top %s per service. Set TOP=N or TOP=0 (all).\n" "$$TOP"; \
 	printf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+# NOTE: `users` and `destinations` cover Xray and Telemt only. AmneziaWG
+# stats live in `sudo awg show awg0` and key by client pubkey, not IP, so
+# they don't fold cleanly into the IP-keyed report. For now the raw view
+# is in `make amnezia-status`; if we ever wire up multiple AmneziaWG peers
+# with friendly names, this is where to integrate them.
 
 # ──────────────────────────────────────────────
 # Help
@@ -419,7 +496,7 @@ help: ## Show this help
 	@echo "Usage: make <target>"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make setup       # Check prereqs + init terraform"

@@ -59,3 +59,35 @@ output "telegram_bot_status" {
     ssh ubuntu@${aws_eip.vps.public_ip} 'sudo docker ps -f name=lazy-vps-bot && sudo docker logs --tail=30 lazy-vps-bot'
   EOT
 }
+
+output "tailscale_enabled" {
+  description = "Whether the VPS is configured to join your tailnet"
+  # Comparing a sensitive value to "" produces a non-sensitive boolean (no
+  # info leak), but Terraform's static check flags any output that touches
+  # a sensitive var. nonsensitive() explicitly opts out — safe here because
+  # we're only revealing "is the key empty or not?".
+  value = nonsensitive(var.tailscale_auth_key) != ""
+}
+
+output "tailscale_hostname" {
+  description = "Tailnet hostname of the VPS (only meaningful when tailscale_enabled=true)"
+  value       = var.tailscale_hostname
+}
+
+output "amnezia_enabled" {
+  description = "Whether AmneziaWG (obfuscated WireGuard) is configured on the VPS"
+  value       = var.amnezia_enabled
+}
+
+output "amnezia_port" {
+  description = "UDP port AmneziaWG listens on (only meaningful when amnezia_enabled=true)"
+  value       = var.amnezia_port
+}
+
+output "get_amnezia_config" {
+  description = "Run this command after deploy to fetch your AmneziaWG client config"
+  value = var.amnezia_enabled ? format(
+    "Run the following after cloud-init completes (~5-6 min after deploy):\n\n  ssh ubuntu@%s 'sudo cat /opt/amnezia/client.conf'\n\nOr simply:  make amnezia-link",
+    aws_eip.vps.public_ip,
+  ) : "AmneziaWG is disabled. Set TF_VAR_amnezia_enabled=true and re-deploy."
+}

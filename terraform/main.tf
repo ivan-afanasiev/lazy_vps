@@ -48,12 +48,18 @@ resource "aws_security_group" "vps" {
   name        = "lazy-vps-sg"
   description = "Allow SSH and VLESS Reality (443)"
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.ssh_cidr_blocks
+  # Public SSH is only exposed when Tailscale is NOT configured. When you set
+  # tailscale_auth_key, SSH goes over the tailnet instead and port 22 is
+  # dropped from the public security group entirely.
+  dynamic "ingress" {
+    for_each = var.tailscale_auth_key == "" ? [1] : []
+    content {
+      description = "SSH"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = var.ssh_cidr_blocks
+    }
   }
 
   ingress {
@@ -70,6 +76,20 @@ resource "aws_security_group" "vps" {
     to_port     = var.mtproto_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # AmneziaWG only exposes its UDP port when the feature flag is on. The
+  # port is 51820 by default (standard WireGuard) but every other byte on
+  # the wire is obfuscated, so DPI can't classify it as WG.
+  dynamic "ingress" {
+    for_each = var.amnezia_enabled ? [1] : []
+    content {
+      description = "AmneziaWG (obfuscated WireGuard)"
+      from_port   = var.amnezia_port
+      to_port     = var.amnezia_port
+      protocol    = "udp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
 
   egress {
@@ -175,6 +195,16 @@ resource "aws_instance" "vps" {
     aws_region             = var.aws_region
     bot_py                 = file("${path.module}/scripts/bot.py")
     install_bot_sh         = file("${path.module}/scripts/install-bot.sh")
+    tailscale_auth_key     = var.tailscale_auth_key
+    tailscale_hostname     = var.tailscale_hostname
+    tailscale_tags         = join(",", var.tailscale_tags)
+    amnezia_enabled        = var.amnezia_enabled ? "true" : ""
+    amnezia_port           = var.amnezia_port
+    amnezia_jc             = var.amnezia_jc
+    amnezia_jmin           = var.amnezia_jmin
+    amnezia_jmax           = var.amnezia_jmax
+    amnezia_s1             = var.amnezia_s1
+    amnezia_s2             = var.amnezia_s2
   }))
 
   # user_data runs only on first boot. Changing it would force a full instance

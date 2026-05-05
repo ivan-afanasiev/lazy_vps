@@ -12,6 +12,16 @@ MTPROTO_MASK_DOMAIN="${mtproto_mask_domain}"
 TELEGRAM_BOT_TOKEN="${telegram_bot_token}"
 TELEGRAM_ALLOWED_USERS='${telegram_allowed_users}'
 AWS_REGION="${aws_region}"
+TAILSCALE_AUTH_KEY="${tailscale_auth_key}"
+TAILSCALE_HOSTNAME="${tailscale_hostname}"
+TAILSCALE_TAGS="${tailscale_tags}"
+AMNEZIA_ENABLED="${amnezia_enabled}"
+AMNEZIA_PORT="${amnezia_port}"
+AMNEZIA_JC="${amnezia_jc}"
+AMNEZIA_JMIN="${amnezia_jmin}"
+AMNEZIA_JMAX="${amnezia_jmax}"
+AMNEZIA_S1="${amnezia_s1}"
+AMNEZIA_S2="${amnezia_s2}"
 
 # --- System Update ---
 apt-get update -y
@@ -257,3 +267,304 @@ CAMOUFLAGE_DOMAIN="$CAMOUFLAGE_DOMAIN" \
 MTPROTO_PORT="$MTPROTO_PORT" \
 BOT_PY_PATH=/opt/lazy-vps-bot/bot.py \
 /opt/lazy-vps-bot/install-bot.sh
+
+# ============================================
+# Tailscale (optional)
+# ============================================
+# When TAILSCALE_AUTH_KEY is set, join the tailnet so you can reach this VPS
+# over MagicDNS (e.g. `ssh ubuntu@lazy-vps`) without exposing SSH to the
+# public internet. Runs last so any failure here leaves VLESS/MTProto/bot
+# already up and working.
+#
+# --accept-dns=false is important: Tailscale's MagicDNS would otherwise
+# replace /etc/resolv.conf, which breaks Xray's resolution of the Reality
+# camouflage domain (dzen.ru by default) on some setups. MagicDNS still
+# works from client devices that want to reach THIS host by name; the
+# flag only affects what the VPS itself uses as its resolver.
+
+if [ -n "$TAILSCALE_AUTH_KEY" ]; then
+  echo ""
+  echo "=== Installing Tailscale ==="
+  curl -fsSL https://tailscale.com/install.sh | sh
+
+  TS_ARGS=(
+    --authkey="$TAILSCALE_AUTH_KEY"
+    --hostname="$TAILSCALE_HOSTNAME"
+    --ssh
+    --accept-dns=false
+    --accept-routes=false
+  )
+  if [ -n "$TAILSCALE_TAGS" ]; then
+    TS_ARGS+=(--advertise-tags="$TAILSCALE_TAGS")
+  fi
+
+  # `tailscale up` occasionally returns non-zero transiently on first boot
+  # (e.g. control plane DNS not cached yet). Retry a few times before giving
+  # up — we don't want to fail cloud-init just because Tailscale is slow.
+  for attempt in 1 2 3; do
+    if tailscale up "$${TS_ARGS[@]}"; then
+      echo "Tailscale up on attempt $attempt"
+      break
+    fi
+    echo "tailscale up failed (attempt $attempt), retrying in 10s…"
+    sleep 10
+  done
+
+  tailscale status || true
+  echo "=== Tailscale setup complete ==="
+else
+  echo ""
+  echo "=== Tailscale: skipped (no auth key provided) ==="
+fi
+
+# ============================================
+# AmneziaWG (optional)
+# ============================================
+# Obfuscated WireGuard fork from the Amnezia VPN project. Same crypto as
+# WireGuard, but the wire format is randomised (Jc junk packets at
+# handshake, S1/S2 header padding) so DPI can't fingerprint it as WG.
+#
+# We install via the official PPA on Ubuntu (provides both the kernel
+# DKMS module and the awg / awg-quick userspace tools), then:
+#   1. Generate a server keypair + a single "default client" keypair.
+#   2. Write /etc/amnezia/amneziawg/awg0.conf with the obfuscation params
+#      and a NAT/forwarding PostUp so client traffic egresses to the
+#      internet via the VPS's public IP.
+#   3. Bring up awg-quick@awg0 and enable it across reboots.
+#   4. Write the client-side config + a vpn:// import URI to
+#      /opt/amnezia/ so `make amnezia-link` can fetch them.
+#
+# Runs last on purpose: any failure in here leaves Reality / Telemt / bot
+# already up, and cloud-init still reports success.
+
+if [ -n "$AMNEZIA_ENABLED" ]; then
+  echo ""
+  echo "=== Installing AmneziaWG ==="
+
+  # Soften the error trap: AmneziaWG depends on the Amnezia PPA + a DKMS
+  # kernel module build that occasionally lags new Ubuntu kernel point
+  # releases. We don't want a transient PPA hiccup to fail cloud-init —
+  # VLESS / Telemt / the bot are already up by the time we get here.
+  set +e
+  amnezia_setup() {
+    set -e
+
+    # The Amnezia PPA needs software-properties-common + python3-launchpadlib
+    # on a minimal Ubuntu cloud image to add a PPA non-interactively.
+    apt-get install -y software-properties-common python3-launchpadlib gnupg2 \
+                       "linux-headers-$(uname -r)" iptables qrencode
+
+    add-apt-repository -y ppa:amnezia/ppa
+    apt-get update -y
+    # The metapackage `amneziawg` pulls in the kernel module (DKMS) plus the
+    # awg / awg-quick userspace tools.
+    apt-get install -y amneziawg
+
+    # IP forwarding is already enabled in /etc/sysctl.conf above (alongside
+    # BBR), so AmneziaWG can NAT client traffic without extra sysctls here.
+
+    install -d -m 700 /etc/amnezia/amneziawg
+    install -d -m 755 /opt/amnezia
+
+    # --- Generate keypairs ---
+    SERVER_PRIV=$(awg genkey)
+    SERVER_PUB=$(printf '%s' "$SERVER_PRIV" | awg pubkey)
+    CLIENT_PRIV=$(awg genkey)
+    CLIENT_PUB=$(printf '%s' "$CLIENT_PRIV" | awg pubkey)
+    PSK=$(awg genpsk)
+
+    # --- Network detection (egress NIC for the NAT MASQUERADE rule) ---
+    DEFAULT_IFACE=$(ip -o -4 route show to default | awk '{print $5; exit}')
+    DEFAULT_IFACE="$${DEFAULT_IFACE:-ens5}"
+
+    # --- Public IP for the client config Endpoint ---
+    IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+    PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
+
+    # --- Server config ---
+    # 10.13.13.0/24 was picked to avoid common collisions: many home routers
+    # use 192.168.0/1.0/24, AWS VPCs use 172.31/172.16, and Tailscale uses
+    # 100.64/10. 10.13.13/24 is reserved by tradition for personal WG setups
+    # and unlikely to clash with anything the user is already on.
+    cat > /etc/amnezia/amneziawg/awg0.conf <<AWGCONF
+[Interface]
+Address = 10.13.13.1/24
+ListenPort = $AMNEZIA_PORT
+PrivateKey = $SERVER_PRIV
+Jc = $AMNEZIA_JC
+Jmin = $AMNEZIA_JMIN
+Jmax = $AMNEZIA_JMAX
+S1 = $AMNEZIA_S1
+S2 = $AMNEZIA_S2
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $DEFAULT_IFACE -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $DEFAULT_IFACE -j MASQUERADE
+
+[Peer]
+PublicKey = $CLIENT_PUB
+PresharedKey = $PSK
+AllowedIPs = 10.13.13.2/32
+AWGCONF
+    chmod 600 /etc/amnezia/amneziawg/awg0.conf
+
+    # --- Client config (handed to the user verbatim) ---
+    cat > /opt/amnezia/client.conf <<CLIENTCONF
+[Interface]
+PrivateKey = $CLIENT_PRIV
+Address = 10.13.13.2/32
+DNS = 1.1.1.1, 1.0.0.1
+Jc = $AMNEZIA_JC
+Jmin = $AMNEZIA_JMIN
+Jmax = $AMNEZIA_JMAX
+S1 = $AMNEZIA_S1
+S2 = $AMNEZIA_S2
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+
+[Peer]
+PublicKey = $SERVER_PUB
+PresharedKey = $PSK
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = $PUBLIC_IP:$AMNEZIA_PORT
+PersistentKeepalive = 25
+CLIENTCONF
+    chmod 644 /opt/amnezia/client.conf
+
+    # --- vpn:// URI for one-tap import in the Amnezia VPN client app ---
+    # The Amnezia client wants a custom envelope, not just base64 of the
+    # WireGuard .conf:
+    #
+    #   vpn:// + base64url( <4-byte big-endian uncompressed JSON length>
+    #                       + zlib(deflate)(JSON) )
+    #
+    # The JSON shape mirrors what the official AmneziaVPN app emits when
+    # you "Share → AmneziaWG native format" (see ne0x/wg-easy
+    # generateAmneziaVPNClientConfig + andr13/amnezia-config-decoder for
+    # the canonical encode/decode). The .conf string lives inside
+    # containers[0].awg.last_config (which is itself a *stringified* JSON
+    # object — that double-encoding is intentional and required).
+    #
+    # We feed all the dynamic values in via env vars so the Python source
+    # stays a literal heredoc and we don't have to fight Terraform
+    # templating + bash quoting + Python string syntax simultaneously.
+    AMN_PUBLIC_IP="$PUBLIC_IP" \
+    AMN_PORT="$AMNEZIA_PORT" \
+    AMN_CONF=/opt/amnezia/client.conf \
+    AMN_OUT=/opt/amnezia/vpn.uri \
+    AMN_CLIENT_PRIV="$CLIENT_PRIV" \
+    AMN_CLIENT_IP="10.13.13.2/32" \
+    AMN_SERVER_PUB="$SERVER_PUB" \
+    AMN_PSK="$PSK" \
+    AMN_JC="$AMNEZIA_JC" \
+    AMN_JMIN="$AMNEZIA_JMIN" \
+    AMN_JMAX="$AMNEZIA_JMAX" \
+    AMN_S1="$AMNEZIA_S1" \
+    AMN_S2="$AMNEZIA_S2" \
+    python3 <<'PYEOF'
+import base64, json, os, zlib
+
+def env_str(env_name):
+    """Return env var as string, defaulting to '0' if missing."""
+    return os.environ.get(env_name, "0").strip() or "0"
+
+# All AWG params are emitted as strings — the Amnezia client expects
+# strings here, even for numeric values. Always include all of them so
+# the wire format from this URI exactly mirrors what we wrote into the
+# server-side awg0.conf (and into client.conf below); a missing key
+# would let the client default to something else, which would mean a
+# mismatched handshake.
+awg_extras = {
+    "Jc":   env_str("AMN_JC"),
+    "Jmin": env_str("AMN_JMIN"),
+    "Jmax": env_str("AMN_JMAX"),
+    "S1":   env_str("AMN_S1"),
+    "S2":   env_str("AMN_S2"),
+    # H1..H4 are the AmneziaWG default protocol header magics. We use
+    # 1..4 in awg0.conf above, mirror them here so the URI matches.
+    "H1": "1", "H2": "2", "H3": "3", "H4": "4",
+}
+
+with open(os.environ["AMN_CONF"], "r") as fh:
+    config_text = fh.read()
+
+last_config = {
+    **awg_extras,
+    "allowed_ips":           ["0.0.0.0/0", "::/0"],
+    "client_ip":             os.environ["AMN_CLIENT_IP"],
+    "client_priv_key":       os.environ["AMN_CLIENT_PRIV"],
+    "config":                config_text,
+    "hostName":              os.environ["AMN_PUBLIC_IP"],
+    "mtu":                   "1420",
+    "persistent_keep_alive": "25",
+    "port":                  int(os.environ["AMN_PORT"]),
+    "psk_key":               os.environ["AMN_PSK"],
+    "server_pub_key":        os.environ["AMN_SERVER_PUB"],
+}
+
+amnezia_config = {
+    "containers": [{
+        "awg": {
+            "isThirdPartyConfig": True,
+            "last_config":        json.dumps(last_config),
+            "port":               os.environ["AMN_PORT"],
+            "transport_proto":    "udp",
+        },
+        "container": "amnezia-awg",
+    }],
+    "defaultContainer": "amnezia-awg",
+    "description":      "lazy-vps",
+    "dns1":             "1.1.1.1",
+    "dns2":             "1.0.0.1",
+    "hostName":         os.environ["AMN_PUBLIC_IP"],
+}
+
+payload = json.dumps(amnezia_config, indent=4).encode()
+header  = len(payload).to_bytes(4, "big")
+encoded = base64.urlsafe_b64encode(header + zlib.compress(payload)).decode().rstrip("=")
+
+with open(os.environ["AMN_OUT"], "w") as fh:
+    fh.write("vpn://" + encoded + "\n")
+PYEOF
+    chmod 644 /opt/amnezia/vpn.uri
+
+    # --- QR encodes the vpn:// URI (one-tap import in the Amnezia VPN app) ---
+    qrencode -t PNG -o /opt/amnezia/client.png < /opt/amnezia/vpn.uri || true
+    chmod 644 /opt/amnezia/client.png 2>/dev/null || true
+
+    systemctl enable awg-quick@awg0
+    # `awg-quick up` can race with the kernel module loading on the very
+    # first boot; retry a couple times rather than failing the whole script.
+    for attempt in 1 2 3; do
+      if systemctl restart awg-quick@awg0; then
+        echo "AmneziaWG up on attempt $attempt"
+        break
+      fi
+      echo "awg-quick@awg0 failed (attempt $attempt), retrying in 5s…"
+      sleep 5
+    done
+    systemctl status awg-quick@awg0 --no-pager || true
+
+    echo "=== AmneziaWG setup complete ==="
+    echo "Listening on UDP/$AMNEZIA_PORT"
+    echo "Server pubkey: $SERVER_PUB"
+    echo "Client config: /opt/amnezia/client.conf"
+    echo "Amnezia link:  /opt/amnezia/vpn.uri"
+    echo "Amnezia QR:    /opt/amnezia/client.png"
+  }
+
+  if amnezia_setup; then
+    :
+  else
+    echo "!!! AmneziaWG setup failed; VLESS/MTProto/bot are unaffected." >&2
+    echo "    Inspect /var/log/xray-setup.log and re-run by hand." >&2
+  fi
+  set -e
+else
+  echo ""
+  echo "=== AmneziaWG: skipped (amnezia_enabled=false) ==="
+fi

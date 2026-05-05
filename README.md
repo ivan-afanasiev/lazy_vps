@@ -19,6 +19,8 @@ One command to deploy, one command to destroy. Runs on a single `t3.micro` — f
 - [Sharing with friends and family](#sharing-with-friends-and-family)
 - [Telegram bot](#telegram-bot)
 - [Configuration](#configuration)
+- [Tailscale (optional)](#tailscale-optional)
+- [Amnezia VPN (optional)](#amnezia-vpn-optional)
 - [How it works](#how-it-works)
 - [Cost](#cost)
 - [Troubleshooting](#troubleshooting)
@@ -219,10 +221,10 @@ make bot-install     # Installs the bot on the running VPS. Idempotent.
 All defaults live in `terraform/variables.tf`. Override them by creating `terraform/terraform.tfvars`:
 
 ```hcl
-aws_region          = "eu-central-1"
+aws_region          = "eu-north-1"
 instance_type       = "t3.micro"
 ssh_public_key_path = "~/.ssh/id_ed25519.pub"
-camouflage_domain   = "www.vk.com"
+camouflage_domain   = "dzen.ru"
 ssh_cidr_blocks     = ["0.0.0.0/0"]
 mtproto_port        = 8443
 mtproto_mask_domain = "www.yandex.ru"
@@ -230,7 +232,14 @@ mtproto_mask_domain = "www.yandex.ru"
 
 ### Camouflage domains
 
-**VLESS Reality** (`camouflage_domain`) — the domain your VPN pretends to be during a Reality handshake. Pick a popular site with TLS 1.3 that's **reachable from wherever your users connect from** and **not itself blocked**. Defaults to `www.vk.com`. Other options that tend to work well for users in Russia: `www.yandex.ru`, `mail.ru`, `ok.ru`.
+**VLESS Reality** (`camouflage_domain`) — the domain your VPN pretends to be during a Reality handshake. Pick a popular site with TLS 1.3 that's **reachable from wherever your users connect from** and **not itself blocked**, *and* has a realistic ClientHello. Default is `dzen.ru` — a large RU-domestic site that's always reachable from inside Russia (where most users of this project actually are) and has a typical TLS handshake.
+
+Other good 2026 picks:
+
+- In-RU domestic (good if your users are there): `www.kinopoisk.ru`, `lenta.ru`.
+- CDN-backed, globally reachable (use if your users connect from outside RU): `www.microsoft.com`, `www.bing.com`, `www.apple.com`, `swcdn.apple.com`.
+
+Avoid `www.vk.com` — its TLS handshake is atypical, which actually *hurts* Reality's mimicry. See `docs/russia-whitelist-era.md` for context.
 
 **Telegram MTProto** (`mtproto_mask_domain`) — the domain telemt impersonates when an active prober pokes port 8443. Same selection criteria. Default `www.yandex.ru`.
 
@@ -238,7 +247,152 @@ These domains are the **cover story** your traffic presents to anyone inspecting
 
 ### AWS region
 
-You pick this in `terraform.tfvars`. The closer to your users, the lower the latency. For users in Russia/CIS, `eu-central-1` (Frankfurt) or `eu-north-1` (Stockholm) are best. For users in Western Europe, `eu-west-1` (Ireland).
+You pick this in `terraform.tfvars`. The closer to your users, the lower the latency. For users in Russia/CIS in 2026:
+
+- **`eu-north-1` (Stockholm)** — currently the most reliable; lighter throttling on AWS ranges than Frankfurt.
+- **`me-central-1` (UAE)** — different IP reputation, geographically reasonable.
+- `eu-central-1` (Frankfurt) — lowest latency, but its AWS IP ranges have been heavily throttled on TSPU (the Russian DPI infrastructure) since 2024-2025.
+
+For users in Western Europe, `eu-west-1` (Ireland). See `docs/russia-whitelist-era.md` for the full reasoning.
+
+---
+
+## Tailscale (optional)
+
+For personal use you can join the VPS to your [Tailscale](https://tailscale.com) tailnet so that:
+
+- **Public SSH (port 22) closes** — Terraform drops the rule entirely. Your VPS's only public-facing ports become 443 (VLESS) and 8443 (MTProto), which are already designed to survive the open internet.
+- **You SSH over the tailnet** — `make ssh`, `make logs`, `make bot-install` and friends automatically use the tailnet hostname instead of the Elastic IP.
+- **Tailscale SSH** is enabled on the VPS — no more managing `~/.ssh/authorized_keys`; auth happens via your Tailscale identity.
+
+Your friends and family using the VPN/Telegram proxy are **unaffected** — they connect via the public Elastic IP as before. Only operator access (you, managing the box) moves to Tailscale.
+
+> Not a replacement for VLESS. Tailscale is not a censorship-evasion tool; it doesn't disguise itself as HTTPS. Keep using VLESS/MTProto for that.
+
+### Setup
+
+1. Create a Tailscale account (the free Personal plan covers up to 100 devices).
+2. Install Tailscale on the devices you want to manage the VPS from (Mac, iPhone, iPad).
+3. Generate an auth key at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys). Recommended settings:
+   - **Reusable**: off
+   - **Ephemeral**: off (the VPS is long-lived)
+   - **Pre-approved**: on (otherwise you have to manually approve the node after first boot)
+   - **Expiry**: 90 days is fine; the machine stays online after the key expires
+   - **Tags**: `tag:lazy-vps` (declare the tag in your tailnet's [ACL policy](https://login.tailscale.com/admin/acls) first, or skip tags entirely)
+4. Add the key to `.envrc`:
+
+   ```bash
+   export TF_VAR_tailscale_auth_key='tskey-auth-XXXXXXXXXXX-XXXXXXXXXXXX'
+   # Optional — defaults are fine:
+   # export TF_VAR_tailscale_hostname='lazy-vps'
+   # export TF_VAR_tailscale_tags='["tag:lazy-vps"]'
+   ```
+
+5. **For a fresh deployment**: `make deploy` — cloud-init installs Tailscale and joins the tailnet as the VPS comes up. Port 22 is never opened.
+
+6. **For an existing deployment**: `make deploy` drops the SSH rule and applies Terraform changes, but cloud-init only runs on first boot, so Tailscale won't get installed on an already-running VPS. Two options:
+
+   - **Easiest**: `make destroy && make deploy`. You'll get a new Elastic IP and fresh Reality keys, so every VLESS link needs to be redistributed. Fine if you're the only user.
+   - **In-place**: SSH in (while port 22 is still open), run the installer manually, *then* `make deploy` to close port 22:
+
+     ```bash
+     make ssh
+     curl -fsSL https://tailscale.com/install.sh | sudo sh
+     sudo tailscale up --authkey="$TF_VAR_tailscale_auth_key" \
+                      --hostname=lazy-vps --ssh \
+                      --accept-dns=false --accept-routes=false
+     exit
+     make deploy   # now drops the public SSH rule
+     ```
+
+### Verifying
+
+```bash
+tailscale status                  # lists your devices; lazy-vps should appear
+make ssh                          # should connect via the tailnet hostname
+cd terraform && terraform output tailscale_enabled   # should print "true"
+```
+
+If `make ssh` hangs, make sure your laptop is on the tailnet (`tailscale status`) and that `lazy-vps` resolves (`tailscale ping lazy-vps`).
+
+### Disabling Tailscale
+
+Unset `TF_VAR_tailscale_auth_key` (or set it to an empty string) and `make deploy`. Terraform re-opens port 22 in the security group. The Tailscale daemon stays installed on the VPS; to remove the machine from your tailnet, run `sudo tailscale logout` on the VPS or delete it in the [admin console](https://login.tailscale.com/admin/machines).
+
+### Why `--accept-dns=false`?
+
+Xray resolves the Reality camouflage domain (`dzen.ru` by default) to sustain its cover story. Tailscale's MagicDNS, if enabled on the VPS itself, replaces `/etc/resolv.conf` and can interfere with that resolution under some setups. We disable MagicDNS on the VPS only — your *client* devices still resolve `lazy-vps` and other tailnet hostnames normally.
+
+---
+
+## Amnezia VPN (optional)
+
+For users on networks where direct VLESS Reality is throttled (some Russian mobile operators in 2026, some captive Wi-Fi setups), you can enable a second tunnel: **AmneziaWG**.
+
+AmneziaWG is the [Amnezia VPN](https://amnezia.org) project's obfuscated fork of WireGuard. Same crypto and performance as WireGuard, but the wire format is randomised (junk packets at handshake, header padding) so DPI can't fingerprint it as WG. It's UDP, so it provides a different transport profile than Reality (which is TCP/443) — when one path is degraded, the other often still works.
+
+> Not a replacement for VLESS Reality. Reality is still the recommended primary transport: it survives stricter DPI and has better cover (looks like HTTPS to a real CDN). AmneziaWG is a *fallback* when UDP is fine on your network but TCP/443 to AWS is being throttled.
+
+### Setup
+
+1. Add the feature flag to `.envrc`:
+
+   ```bash
+   export TF_VAR_amnezia_enabled=true
+   # Optional — defaults are fine:
+   # export TF_VAR_amnezia_port=51820
+   ```
+
+2. **For a fresh deployment**: `make deploy` — cloud-init installs AmneziaWG via the official PPA, generates a server keypair plus one client keypair, and brings the interface up on UDP/51820. The security group opens UDP/51820 to the world.
+
+3. **For an existing deployment**: cloud-init only runs on first boot, so flipping the flag on a live VPS won't install AmneziaWG. You have two options:
+
+   - **Easiest**: `make destroy && make deploy`. New EIP, new Reality keys, every VLESS link needs to be redistributed. Fine if you're the only user.
+   - **In-place**: SSH in and run the install steps from `terraform/scripts/setup-xray.sh` (the block under "AmneziaWG (optional)") manually. You'll still need `make deploy` after to open UDP/51820 in the security group.
+
+### Connecting
+
+```bash
+make amnezia-link    # prints vpn:// link + saves amnezia-client.{vpn,conf}
+make amnezia-qr      # downloads QR code to ./amnezia-client.png
+```
+
+`make amnezia-link` prints a `vpn://...` string and saves two files:
+
+- `amnezia-client.vpn` — paste / send to anyone using the **Amnezia VPN** main app for one-tap import. Identical to what the app's "Share" button produces.
+- `amnezia-client.conf` — standard AmneziaWG `.conf` for **AmneziaWG-only** clients (or any WireGuard app that understands AWG params).
+
+Import into:
+
+| Platform | App | Where to get it | Use this file |
+|----------|-----|-----------------|---------------|
+| iOS | Amnezia VPN | [App Store](https://apps.apple.com/app/amnezia-vpn/id1600529900) | `.vpn` (paste link / scan QR) |
+| iOS | AmneziaWG | [App Store](https://apps.apple.com/app/amneziawg/id6478942365) | `.conf` |
+| Android | Amnezia VPN | [Play Store](https://play.google.com/store/apps/details?id=org.amnezia.vpn) | `.vpn` |
+| macOS / Windows / Linux | Amnezia VPN | [amnezia.org/downloads](https://amnezia.org/downloads) | `.vpn` |
+
+**One-tap on phones**: `make amnezia-qr` → scan the resulting `amnezia-client.png` from the Amnezia VPN app.
+
+> **One config = one credential** for now, same as VLESS. If you want to give a friend their own keypair, generate it on the VPS with `awg genkey | sudo tee /etc/amnezia/amneziawg/$NAME.privkey` and add a `[Peer]` block to `/etc/amnezia/amneziawg/awg0.conf`. Per-user credential management isn't built into the bot yet.
+
+### Verifying
+
+```bash
+make amnezia-status   # shows interface state, last handshake, transferred bytes
+```
+
+If the interface is up but no handshake registered, the client hasn't connected yet — that's expected on a fresh deploy.
+
+### Disabling AmneziaWG
+
+Set `TF_VAR_amnezia_enabled=false` (or unset) and `make deploy`. Terraform removes UDP/51820 from the security group. The AmneziaWG service stays installed on the VPS; to stop it, `ssh ubuntu@<host> 'sudo systemctl disable --now awg-quick@awg0'`.
+
+### Why is this off by default?
+
+- AmneziaWG's optional upside doesn't matter for users in countries that don't actively block WireGuard.
+- Opening UDP/51820 expands the public attack surface of the box (one more listening service).
+- It costs ~5 MB of RAM and a DKMS module rebuild on every kernel upgrade.
+- Reality alone fits the "single-button VPN that survives RU DPI" story for most users; the doc at `docs/russia-whitelist-era.md` covers when you'd actually need a second transport.
 
 ---
 
@@ -247,19 +401,22 @@ You pick this in `terraform.tfvars`. The closer to your users, the lower the lat
 ```
                     ┌──────────────────────────────────┐
                     │  EC2 t3.micro (Ubuntu 24.04)     │
-  VPN traffic ─────▶│  Xray (port 443)                 │──▶ Internet
+  VPN traffic ─────▶│  Xray (port 443/tcp)             │──▶ Internet
   (all apps)        │  VLESS + XTLS-Reality            │
-                    │  Looks like HTTPS to vk.com      │
+                    │  Looks like HTTPS to dzen.ru     │
                     │                                  │
   Telegram ────────▶│  Telemt (port 8443)              │──▶ Telegram servers
   (proxy in app)    │  MTProto + fake TLS (yandex.ru)  │
+                    │                                  │
+  VPN traffic ─────▶│  AmneziaWG (port 51820/udp)      │──▶ Internet
+  (optional flag)   │  Obfuscated WireGuard            │
                     │                                  │
   You (Telegram) ──▶│  lazy-vps-bot (Python, Docker)   │
                     │  IAM role → CloudWatch API       │
                     └──────────────────────────────────┘
 ```
 
-Xray and telemt are independent — they share only the VPS. You can use either, both, or neither on a given device.
+Xray, telemt, and AmneziaWG are independent — they share only the VPS. You can use any combination on a given device. AmneziaWG is off by default; see [Amnezia VPN (optional)](#amnezia-vpn-optional).
 
 ---
 
@@ -357,10 +514,13 @@ make plan               # Preview changes
 # Links
 make vless-link         # VPN link
 make tg-link            # Telegram proxy link
+make amnezia-link       # AmneziaWG vpn:// link + .conf (only if amnezia_enabled=true)
+make amnezia-qr         # Download AmneziaWG QR code as PNG
 
 # Monitoring
 make status             # Xray service status
 make tg-status          # Telemt container status
+make amnezia-status     # AmneziaWG interface status (peers, handshake, transfer)
 make users [TOP=N]      # Top client IPs per service this month
 make destinations [TOP=N]  # Top destinations this month
 make traffic            # CloudWatch traffic + cost estimate

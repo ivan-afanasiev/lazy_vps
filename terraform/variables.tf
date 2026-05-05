@@ -23,9 +23,22 @@ variable "ssh_cidr_blocks" {
 }
 
 variable "camouflage_domain" {
-  description = "Domain to mimic for Reality TLS fingerprint"
+  description = <<-EOT
+    Domain to mimic for Reality TLS fingerprint. Default is dzen.ru — a
+    large RU-domestic site that is always reachable from inside Russia
+    (which is where most users of this project actually are) and has a
+    typical TLS 1.3 handshake. See docs/russia-whitelist-era.md for why
+    this matters in 2026.
+
+    Other reasonable picks:
+      - In-RU domestic (good if your users are there):
+          dzen.ru (default), www.kinopoisk.ru, lenta.ru
+      - CDN-backed, globally reachable:
+          www.microsoft.com, www.bing.com, www.apple.com, swcdn.apple.com
+    Avoid www.vk.com (atypical TLS, hurts Reality mimicry).
+  EOT
   type        = string
-  default     = "www.vk.com"
+  default     = "dzen.ru"
 }
 
 variable "mtproto_port" {
@@ -66,4 +79,96 @@ variable "telegram_allowed_users" {
     condition     = length(var.telegram_allowed_users) > 0
     error_message = "telegram_allowed_users must not be empty. Set TF_VAR_telegram_allowed_users, e.g. '[\"alice\",\"123456789\"]'."
   }
+}
+
+# --- Tailscale (optional) ---
+# When this is set to a non-empty auth key, the VPS joins your tailnet on first
+# boot and public SSH (port 22) is removed from the security group — you then
+# SSH in over Tailscale instead of the public EIP. Leave empty to disable.
+#
+# Generate a reusable, ephemeral, pre-approved auth key in the Tailscale admin
+# console:  https://login.tailscale.com/admin/settings/keys
+# Recommended flags: Reusable=off, Ephemeral=off, Pre-approved=on, tag=tag:lazy-vps
+# Set via environment:
+#   export TF_VAR_tailscale_auth_key='tskey-auth-XXXX-YYYY'
+
+variable "tailscale_auth_key" {
+  description = "Tailscale auth key. Empty = Tailscale disabled (default). Non-empty = VPS joins tailnet and public SSH is closed."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "tailscale_hostname" {
+  description = "Hostname the VPS registers in your tailnet (MagicDNS). Only used when tailscale_auth_key is set."
+  type        = string
+  default     = "lazy-vps"
+}
+
+variable "tailscale_tags" {
+  description = "Tailscale ACL tags to apply to the VPS, e.g. [\"tag:lazy-vps\"]. Only used when tailscale_auth_key is set. Tags must be declared in your tailnet policy."
+  type        = list(string)
+  default     = []
+}
+
+# --- AmneziaWG (optional) ---
+# AmneziaWG is the obfuscated WireGuard fork from the Amnezia VPN project.
+# It adds packet-shape randomisation (Jc / Jmin / Jmax junk packets and
+# S1/S2 init/response header padding) that defeats the standard WireGuard
+# DPI fingerprint, while keeping WireGuard's performance characteristics.
+#
+# Off by default. Enable by setting TF_VAR_amnezia_enabled=true. When
+# enabled, the VPS opens UDP/<amnezia_port> in the security group on first
+# deploy, installs AmneziaWG via the official PPA, generates a server
+# keypair plus a single client config, and writes a vpn:// import URI for
+# the Amnezia client app.
+#
+# AmneziaWG is intended as a *secondary* transport alongside Reality, not
+# a replacement. See README "Amnezia VPN (optional)".
+
+variable "amnezia_enabled" {
+  description = "Enable AmneziaWG (obfuscated WireGuard) on the VPS. Default: false."
+  type        = bool
+  default     = false
+}
+
+variable "amnezia_port" {
+  description = "UDP port AmneziaWG listens on. Default 51820 (the WireGuard well-known port)."
+  type        = number
+  default     = 51820
+}
+
+# Obfuscation parameters. Defaults below are the values the official
+# Amnezia client ships in its "AmneziaWG (default)" profile circa 2026.
+# Don't tweak unless you know why — mismatched server/client values mean
+# the tunnel won't come up at all.
+
+variable "amnezia_jc" {
+  description = "AmneziaWG Jc: number of junk packets sent at handshake. Default 4."
+  type        = number
+  default     = 4
+}
+
+variable "amnezia_jmin" {
+  description = "AmneziaWG Jmin: minimum junk packet size. Default 40."
+  type        = number
+  default     = 40
+}
+
+variable "amnezia_jmax" {
+  description = "AmneziaWG Jmax: maximum junk packet size. Default 70."
+  type        = number
+  default     = 70
+}
+
+variable "amnezia_s1" {
+  description = "AmneziaWG S1: init-packet header padding bytes. Default 0 (per upstream Amnezia 2.x guidance)."
+  type        = number
+  default     = 0
+}
+
+variable "amnezia_s2" {
+  description = "AmneziaWG S2: response-packet header padding bytes. Default 0."
+  type        = number
+  default     = 0
 }
