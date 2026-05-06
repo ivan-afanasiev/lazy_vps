@@ -13,6 +13,7 @@ Config via env:
   XRAY_UUID, XRAY_SHORT_ID, CAMOUFLAGE_DOMAIN - to build vless link
   MTPROTO_PORT               - informational
   AMNEZIA_ENABLED            - 'true' if AmneziaWG is configured on this VPS
+  TAILSCALE_ENABLED          - 'true' if Tailscale is configured on this VPS
   CTL_SOCKET                 - path to lazy-vps-ctl Unix socket for restart
   XRAY_PUBLIC_KEY_PATH       - default /data/xray/public_key.txt
   XRAY_ACCESS_LOG            - default /data/xray/access.log
@@ -65,6 +66,7 @@ TG_LINK_PATH = os.environ.get("TG_LINK_PATH", "/data/telemt/tg_link.txt")
 AMNEZIA_ENABLED = os.environ.get("AMNEZIA_ENABLED", "").strip().lower() in {"true", "1", "yes"}
 AMNEZIA_VPN_URI_PATH = os.environ.get("AMNEZIA_VPN_URI_PATH", "/data/amnezia/vpn.uri")
 AMNEZIA_CLIENT_CONF_PATH = os.environ.get("AMNEZIA_CLIENT_CONF_PATH", "/data/amnezia/client.conf")
+TAILSCALE_ENABLED = os.environ.get("TAILSCALE_ENABLED", "").strip().lower() in {"true", "1", "yes"}
 CTL_SOCKET = os.environ.get("CTL_SOCKET", "/data/ctl/lazy-vps-ctl.sock")
 DOCKER_SOCK = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 INSTANCE_NAME_TAG = os.environ.get("INSTANCE_NAME_TAG", "lazy-vps")
@@ -190,10 +192,13 @@ HELP_TEXT = (
     "/status - Xray service status\n"
     "/tgstatus - Telemt (Telegram proxy) container status\n"
     "/amnstatus - AmneziaWG interface status (peers, handshake, transfer)\n"
+    "/tsstatus - Tailscale daemon + tunnel status\n"
+    "/tsup - Bring the VPS back onto the tailnet (re-runs `tailscale up`)\n"
+    "/tsdown - Take the VPS off the tailnet (`tailscale down`; re-up via /tsup)\n"
     "/traffic - Month-to-date EC2 network traffic (CloudWatch)\n"
     "/destinations [N] - Top N destinations this month (default 20)\n"
     "/users [N] - Top N client IPs per service this month (default 10)\n"
-    "/restart xray|telemt|amnezia - Restart a service\n"
+    "/restart xray|telemt|amnezia|tailscale - Restart a service\n"
     "/help - Show this message"
 )
 
@@ -333,6 +338,69 @@ async def cmd_amnstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _tailscale_disabled_msg() -> str:
+    return (
+        "Tailscale is not configured on this VPS.\n"
+        "Set TF_VAR_tailscale_auth_key and re-deploy."
+    )
+
+
+@authorized
+async def cmd_tsstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not TAILSCALE_ENABLED:
+        await update.effective_message.reply_text(_tailscale_disabled_msg())
+        return
+    rc, out = await asyncio.get_running_loop().run_in_executor(
+        None, _ctl_call, "status tailscale"
+    )
+    if rc != 0:
+        await update.effective_message.reply_text(f"Tailscale status unavailable: {out}")
+        return
+    await update.effective_message.reply_text(
+        _code_block(out) if out else "(no output from tailscale status)",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@authorized
+async def cmd_tsup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not TAILSCALE_ENABLED:
+        await update.effective_message.reply_text(_tailscale_disabled_msg())
+        return
+    await update.effective_message.reply_text("Bringing tailnet up…")
+    # `tailscale up` can take a few seconds to negotiate; bump the timeout.
+    rc, out = await asyncio.get_running_loop().run_in_executor(
+        None, _ctl_call, "up tailscale", 30.0
+    )
+    if rc == 0:
+        await update.effective_message.reply_text(f"OK: {out or 'up'}")
+    else:
+        await update.effective_message.reply_text(f"Failed: {out}")
+
+
+@authorized
+async def cmd_tsdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not TAILSCALE_ENABLED:
+        await update.effective_message.reply_text(_tailscale_disabled_msg())
+        return
+    # Friendly heads-up: the operator is *probably* sitting on a laptop
+    # whose only path to the VPS is the tailnet (since public SSH is
+    # closed when Tailscale is configured). After /tsdown they'll lose
+    # SSH but can still re-up via /tsup since the bot reaches the VPS
+    # over Telegram, not the tailnet.
+    await update.effective_message.reply_text(
+        "Taking the VPS off the tailnet…\n"
+        "You'll lose `make ssh` until you /tsup again."
+    )
+    rc, out = await asyncio.get_running_loop().run_in_executor(
+        None, _ctl_call, "down tailscale", 20.0
+    )
+    if rc == 0:
+        await update.effective_message.reply_text(f"OK: {out or 'down'}")
+    else:
+        await update.effective_message.reply_text(f"Failed: {out}")
+
+
 def _ctl_call(cmd: str, timeout: float = 10.0) -> tuple[int, str]:
     """Send a line to the lazy-vps-ctl Unix socket, read response.
 
@@ -401,10 +469,10 @@ async def cmd_tgstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @authorized
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
-    valid = {"xray", "telemt", "amnezia"}
+    valid = {"xray", "telemt", "amnezia", "tailscale"}
     if not args or args[0] not in valid:
         await update.effective_message.reply_text(
-            "Usage: /restart xray|telemt|amnezia"
+            "Usage: /restart xray|telemt|amnezia|tailscale"
         )
         return
     service = args[0]
@@ -412,6 +480,9 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "AmneziaWG is disabled on this VPS."
         )
+        return
+    if service == "tailscale" and not TAILSCALE_ENABLED:
+        await update.effective_message.reply_text(_tailscale_disabled_msg())
         return
     await update.effective_message.reply_text(f"Restarting {service}…")
     rc, out = await asyncio.get_running_loop().run_in_executor(
@@ -727,6 +798,9 @@ def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("tgstatus", cmd_tgstatus))
     app.add_handler(CommandHandler("amnstatus", cmd_amnstatus))
+    app.add_handler(CommandHandler("tsstatus", cmd_tsstatus))
+    app.add_handler(CommandHandler("tsup", cmd_tsup))
+    app.add_handler(CommandHandler("tsdown", cmd_tsdown))
     app.add_handler(CommandHandler("traffic", cmd_traffic))
     app.add_handler(CommandHandler("destinations", cmd_destinations))
     app.add_handler(CommandHandler("users", cmd_users))

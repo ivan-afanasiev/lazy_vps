@@ -89,11 +89,15 @@ cat > /usr/local/sbin/lazy-vps-ctl <<'CTL'
 #!/bin/bash
 # Reads a single line from stdin, writes a single line to stdout.
 # Protocol:
-#   restart xray    -> OK restarted | ERR <msg>
-#   restart telemt  -> OK restarted | ERR <msg>
-#   restart amnezia -> OK restarted | ERR <msg>
-#   status  xray    -> OK <active|inactive|...> | ERR <msg>
-#   status  amnezia -> OK <multi-line awg show output> | ERR <msg>
+#   restart xray      -> OK restarted | ERR <msg>
+#   restart telemt    -> OK restarted | ERR <msg>
+#   restart amnezia   -> OK restarted | ERR <msg>
+#   restart tailscale -> OK restarted | ERR <msg>     (systemctl restart tailscaled)
+#   up      tailscale -> OK up        | ERR <msg>     (tailscale up; no auth key, reuses cached identity)
+#   down    tailscale -> OK down      | ERR <msg>     (tailscale down)
+#   status  xray      -> OK <state>   | ERR <msg>
+#   status  amnezia   -> OK <multi-line awg show>      | ERR <msg>
+#   status  tailscale -> OK <multi-line ts status>     | ERR <msg>
 set -u
 read -r line || { printf 'ERR empty request\n'; exit 0; }
 set -- $line
@@ -122,6 +126,45 @@ case "$verb:$target" in
       printf 'ERR %s\n' "$(printf '%s' "$out" | one_line)"
     fi
     ;;
+  restart:tailscale)
+    if ! command -v tailscale >/dev/null 2>&1; then
+      printf 'ERR tailscale not installed\n'
+      exit 0
+    fi
+    # Restart the daemon; the tunnel reconnects from cached config.
+    if out=$(systemctl restart tailscaled 2>&1); then
+      printf 'OK restarted\n'
+    else
+      printf 'ERR %s\n' "$(printf '%s' "$out" | one_line)"
+    fi
+    ;;
+  up:tailscale)
+    if ! command -v tailscale >/dev/null 2>&1; then
+      printf 'ERR tailscale not installed\n'
+      exit 0
+    fi
+    # `tailscale up` with no flags reuses the previously-saved login
+    # state from /var/lib/tailscale/tailscaled.state — no auth key
+    # needed, same hostname, same node identity. Ignore any "already
+    # running" complaint and just report current status.
+    if out=$(tailscale up 2>&1); then
+      printf 'OK %s\n' "$(printf '%s' "$out" | one_line)"
+    else
+      printf 'ERR %s\n' "$(printf '%s' "$out" | one_line)"
+    fi
+    ;;
+  down:tailscale)
+    if ! command -v tailscale >/dev/null 2>&1; then
+      printf 'ERR tailscale not installed\n'
+      exit 0
+    fi
+    if out=$(tailscale down 2>&1); then
+      msg=$(printf '%s' "$out" | one_line)
+      printf 'OK %s\n' "${msg:-down}"
+    else
+      printf 'ERR %s\n' "$(printf '%s' "$out" | one_line)"
+    fi
+    ;;
   status:xray)
     state=$(systemctl is-active xray 2>/dev/null || true)
     printf 'OK %s\n' "${state:-unknown}"
@@ -138,6 +181,18 @@ case "$verb:$target" in
     # Multi-line responses are fine — the client reads until EOF on the
     # socket. Lead with the systemctl state then the awg dump.
     printf 'OK service=%s\n%s\n' "${state:-unknown}" "$show"
+    ;;
+  status:tailscale)
+    if ! command -v tailscale >/dev/null 2>&1; then
+      printf 'ERR tailscale not installed\n'
+      exit 0
+    fi
+    state=$(systemctl is-active tailscaled 2>/dev/null || true)
+    # `tailscale status` returns non-zero when the tunnel is "Stopped"
+    # (after `tailscale down`), but the output is still useful — it
+    # tells us the node identity. Capture stderr too, swallow the rc.
+    show=$(tailscale status 2>&1 || true)
+    printf 'OK daemon=%s\n%s\n' "${state:-unknown}" "$show"
     ;;
   *)
     printf 'ERR unknown command: %s %s\n' "$verb" "$target"
@@ -204,6 +259,7 @@ XRAY_SHORT_ID=$XRAY_SHORT_ID
 CAMOUFLAGE_DOMAIN=$CAMOUFLAGE_DOMAIN
 MTPROTO_PORT=$MTPROTO_PORT
 AMNEZIA_ENABLED=${AMNEZIA_ENABLED:-}
+TAILSCALE_ENABLED=${TAILSCALE_ENABLED:-}
 XRAY_PUBLIC_KEY_PATH=/data/xray/public_key.txt
 XRAY_ACCESS_LOG=/data/xray-logs/access.log
 TG_LINK_PATH=/data/telemt/tg_link.txt

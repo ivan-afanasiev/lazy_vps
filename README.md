@@ -191,13 +191,18 @@ The VPS runs a small Python bot (`lazy-vps-bot`) in a Docker container alongside
 - `/status` — Xray service status
 - `/tgstatus` — Telemt container status + last logs
 - `/amnstatus` — AmneziaWG interface status: peers, last handshake, transferred bytes (only if enabled)
+- `/tsstatus` — Tailscale daemon + tunnel status (only if enabled)
+- `/tsup` — bring the VPS back onto the tailnet (re-runs `tailscale up`; reuses cached identity, no auth key needed)
+- `/tsdown` — take the VPS off the tailnet (`tailscale down`); operator's `make ssh` stops working until you `/tsup` again
 - `/traffic` — month-to-date network traffic from CloudWatch
 - `/destinations [N]` — top N destinations this month (default 20, `0` = all)
 - `/users [N]` — top N client IPs per service this month (default 10, `0` = all)
-- `/restart xray|telemt|amnezia` — restart a service
+- `/restart xray|telemt|amnezia|tailscale` — restart a service
 - `/help` — list commands
 
 Only users listed in `TF_VAR_telegram_allowed_users` can invoke commands; everyone else gets `Not authorized.` and the attempt is logged (`make bot-logs`).
+
+> The Tailscale tunnel commands (`/tsup`, `/tsdown`, `/restart tailscale`) are reachable over Telegram even when the tunnel is down — the bot doesn't depend on the tailnet to receive messages. So you can `/tsdown` to take the box off your tailnet temporarily and `/tsup` to bring it back without touching SSH or AWS.
 
 ### Adding the bot to an already-deployed VPS
 
