@@ -12,10 +12,13 @@ Config via env:
   AWS_REGION                 - AWS region for CloudWatch traffic queries
   XRAY_UUID, XRAY_SHORT_ID, CAMOUFLAGE_DOMAIN - to build vless link
   MTPROTO_PORT               - informational
+  AMNEZIA_ENABLED            - 'true' if AmneziaWG is configured on this VPS
   CTL_SOCKET                 - path to lazy-vps-ctl Unix socket for restart
   XRAY_PUBLIC_KEY_PATH       - default /data/xray/public_key.txt
   XRAY_ACCESS_LOG            - default /data/xray/access.log
   TG_LINK_PATH               - default /data/telemt/tg_link.txt
+  AMNEZIA_VPN_URI_PATH       - default /data/amnezia/vpn.uri
+  AMNEZIA_CLIENT_CONF_PATH   - default /data/amnezia/client.conf
   DOCKER_SOCK                - default /var/run/docker.sock
 """
 from __future__ import annotations
@@ -59,6 +62,9 @@ MTPROTO_PORT = os.environ.get("MTPROTO_PORT", "8443")
 XRAY_PUBLIC_KEY_PATH = os.environ.get("XRAY_PUBLIC_KEY_PATH", "/data/xray/public_key.txt")
 XRAY_ACCESS_LOG = os.environ.get("XRAY_ACCESS_LOG", "/data/xray/access.log")
 TG_LINK_PATH = os.environ.get("TG_LINK_PATH", "/data/telemt/tg_link.txt")
+AMNEZIA_ENABLED = os.environ.get("AMNEZIA_ENABLED", "").strip().lower() in {"true", "1", "yes"}
+AMNEZIA_VPN_URI_PATH = os.environ.get("AMNEZIA_VPN_URI_PATH", "/data/amnezia/vpn.uri")
+AMNEZIA_CLIENT_CONF_PATH = os.environ.get("AMNEZIA_CLIENT_CONF_PATH", "/data/amnezia/client.conf")
 CTL_SOCKET = os.environ.get("CTL_SOCKET", "/data/ctl/lazy-vps-ctl.sock")
 DOCKER_SOCK = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 INSTANCE_NAME_TAG = os.environ.get("INSTANCE_NAME_TAG", "lazy-vps")
@@ -180,12 +186,14 @@ HELP_TEXT = (
     "lazy-vps bot\n\n"
     "/vless - VLESS connection link\n"
     "/tg - Telegram proxy link\n"
+    "/amnezia - AmneziaWG client config + vpn:// link\n"
     "/status - Xray service status\n"
     "/tgstatus - Telemt (Telegram proxy) container status\n"
+    "/amnstatus - AmneziaWG interface status (peers, handshake, transfer)\n"
     "/traffic - Month-to-date EC2 network traffic (CloudWatch)\n"
     "/destinations [N] - Top N destinations this month (default 20)\n"
     "/users [N] - Top N client IPs per service this month (default 10)\n"
-    "/restart xray|telemt - Restart a service\n"
+    "/restart xray|telemt|amnezia - Restart a service\n"
     "/help - Show this message"
 )
 
@@ -268,6 +276,63 @@ async def cmd_tg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
+@authorized
+async def cmd_amnezia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not AMNEZIA_ENABLED:
+        await update.effective_message.reply_text(
+            "AmneziaWG is disabled on this VPS.\n"
+            "Set TF_VAR_amnezia_enabled=true and re-deploy."
+        )
+        return
+
+    # vpn:// is a single line; .conf is multi-line. We send each as its
+    # own message so users can long-press → copy each independently. The
+    # .conf message also doubles as a sanity check ("if you can't import
+    # the link, just paste this into a WireGuard-style client").
+    uri = _read_file(AMNEZIA_VPN_URI_PATH, limit=8192).strip()
+    conf = _read_file(AMNEZIA_CLIENT_CONF_PATH, limit=4096).strip()
+
+    if not uri and not conf:
+        await update.effective_message.reply_text(
+            "AmneziaWG config not available yet. If the server just booted, "
+            "wait a minute (DKMS module compile + first start can take ~5 min)."
+        )
+        return
+
+    if uri:
+        await update.effective_message.reply_text(
+            "AmneziaWG vpn:// link (one-tap import in the Amnezia VPN app):\n\n"
+            f"<code>{_html_escape(uri)}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    if conf:
+        await update.effective_message.reply_text(
+            "Same config as a .conf file (for AmneziaWG / WireGuard apps):\n\n"
+            f"<pre>{_html_escape(conf)}</pre>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@authorized
+async def cmd_amnstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not AMNEZIA_ENABLED:
+        await update.effective_message.reply_text(
+            "AmneziaWG is disabled on this VPS."
+        )
+        return
+    rc, out = await asyncio.get_running_loop().run_in_executor(
+        None, _ctl_call, "status amnezia"
+    )
+    if rc != 0:
+        await update.effective_message.reply_text(f"AmneziaWG status unavailable: {out}")
+        return
+    # _ctl_call already stripped the leading "OK " — `out` is the rest.
+    await update.effective_message.reply_text(
+        _code_block(out) if out else "(no output from awg show)",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 def _ctl_call(cmd: str, timeout: float = 10.0) -> tuple[int, str]:
     """Send a line to the lazy-vps-ctl Unix socket, read response.
 
@@ -336,12 +401,18 @@ async def cmd_tgstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @authorized
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
-    if not args or args[0] not in {"xray", "telemt"}:
+    valid = {"xray", "telemt", "amnezia"}
+    if not args or args[0] not in valid:
         await update.effective_message.reply_text(
-            "Usage: /restart xray|telemt"
+            "Usage: /restart xray|telemt|amnezia"
         )
         return
     service = args[0]
+    if service == "amnezia" and not AMNEZIA_ENABLED:
+        await update.effective_message.reply_text(
+            "AmneziaWG is disabled on this VPS."
+        )
+        return
     await update.effective_message.reply_text(f"Restarting {service}…")
     rc, out = await asyncio.get_running_loop().run_in_executor(
         None, _ctl_call, f"restart {service}", 20.0
@@ -652,8 +723,10 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("vless", cmd_vless))
     app.add_handler(CommandHandler("tg", cmd_tg))
+    app.add_handler(CommandHandler("amnezia", cmd_amnezia))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("tgstatus", cmd_tgstatus))
+    app.add_handler(CommandHandler("amnstatus", cmd_amnstatus))
     app.add_handler(CommandHandler("traffic", cmd_traffic))
     app.add_handler(CommandHandler("destinations", cmd_destinations))
     app.add_handler(CommandHandler("users", cmd_users))

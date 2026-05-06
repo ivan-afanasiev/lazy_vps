@@ -89,9 +89,11 @@ cat > /usr/local/sbin/lazy-vps-ctl <<'CTL'
 #!/bin/bash
 # Reads a single line from stdin, writes a single line to stdout.
 # Protocol:
-#   restart xray   -> OK restarted | ERR <msg>
-#   restart telemt -> OK restarted | ERR <msg>
-#   status  xray   -> OK <active|inactive|...> | ERR <msg>
+#   restart xray    -> OK restarted | ERR <msg>
+#   restart telemt  -> OK restarted | ERR <msg>
+#   restart amnezia -> OK restarted | ERR <msg>
+#   status  xray    -> OK <active|inactive|...> | ERR <msg>
+#   status  amnezia -> OK <multi-line awg show output> | ERR <msg>
 set -u
 read -r line || { printf 'ERR empty request\n'; exit 0; }
 set -- $line
@@ -113,9 +115,29 @@ case "$verb:$target" in
       printf 'ERR %s\n' "$(printf '%s' "$out" | one_line)"
     fi
     ;;
+  restart:amnezia)
+    if out=$(systemctl restart awg-quick@awg0 2>&1); then
+      printf 'OK restarted\n'
+    else
+      printf 'ERR %s\n' "$(printf '%s' "$out" | one_line)"
+    fi
+    ;;
   status:xray)
     state=$(systemctl is-active xray 2>/dev/null || true)
     printf 'OK %s\n' "${state:-unknown}"
+    ;;
+  status:amnezia)
+    # If awg isn't installed (Amnezia disabled), return that explicitly
+    # so the bot can show a useful message instead of a vague error.
+    if ! command -v awg >/dev/null 2>&1; then
+      printf 'ERR amneziawg not installed\n'
+      exit 0
+    fi
+    state=$(systemctl is-active awg-quick@awg0 2>/dev/null || true)
+    show=$(awg show awg0 2>&1 || true)
+    # Multi-line responses are fine — the client reads until EOF on the
+    # socket. Lead with the systemctl state then the awg dump.
+    printf 'OK service=%s\n%s\n' "${state:-unknown}" "$show"
     ;;
   *)
     printf 'ERR unknown command: %s %s\n' "$verb" "$target"
@@ -160,6 +182,12 @@ systemctl enable --now lazy-vps-ctl.socket
 # ============================================
 
 mkdir -p /opt/lazy-vps-bot
+# /opt/amnezia is created by setup-xray.sh's AmneziaWG block when the
+# flag is on. When it's off the directory doesn't exist, but the bot's
+# docker-compose unconditionally mounts it (read-only). Pre-create an
+# empty dir so Docker's bind-mount source exists either way; the bot
+# uses AMNEZIA_ENABLED to decide whether to actually look inside.
+mkdir -p /opt/amnezia
 
 # Only copy bot.py if the source is different from the destination.
 if [ "$BOT_PY_SRC" != /opt/lazy-vps-bot/bot.py ]; then
@@ -175,9 +203,12 @@ XRAY_UUID=$XRAY_UUID
 XRAY_SHORT_ID=$XRAY_SHORT_ID
 CAMOUFLAGE_DOMAIN=$CAMOUFLAGE_DOMAIN
 MTPROTO_PORT=$MTPROTO_PORT
+AMNEZIA_ENABLED=${AMNEZIA_ENABLED:-}
 XRAY_PUBLIC_KEY_PATH=/data/xray/public_key.txt
 XRAY_ACCESS_LOG=/data/xray-logs/access.log
 TG_LINK_PATH=/data/telemt/tg_link.txt
+AMNEZIA_VPN_URI_PATH=/data/amnezia/vpn.uri
+AMNEZIA_CLIENT_CONF_PATH=/data/amnezia/client.conf
 CTL_SOCKET=/data/ctl/lazy-vps-ctl.sock
 BOTENV
 chmod 600 /opt/lazy-vps-bot/bot.env
@@ -221,6 +252,7 @@ services:
       - /usr/local/etc/xray:/data/xray:ro
       - /var/log/xray:/data/xray-logs:ro
       - /opt/telemt:/data/telemt:ro
+      - /opt/amnezia:/data/amnezia:ro
       - /var/run/lazy-vps-ctl:/data/ctl
       - /var/run/docker.sock:/var/run/docker.sock
     security_opt:

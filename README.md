@@ -187,12 +187,14 @@ The VPS runs a small Python bot (`lazy-vps-bot`) in a Docker container alongside
 
 - `/vless` — VLESS connection link
 - `/tg` — Telegram proxy link
+- `/amnezia` — AmneziaWG `vpn://` link + `.conf` (only if `amnezia_enabled=true`)
 - `/status` — Xray service status
 - `/tgstatus` — Telemt container status + last logs
+- `/amnstatus` — AmneziaWG interface status: peers, last handshake, transferred bytes (only if enabled)
 - `/traffic` — month-to-date network traffic from CloudWatch
 - `/destinations [N]` — top N destinations this month (default 20, `0` = all)
 - `/users [N]` — top N client IPs per service this month (default 10, `0` = all)
-- `/restart xray|telemt` — restart a service
+- `/restart xray|telemt|amnezia` — restart a service
 - `/help` — list commands
 
 Only users listed in `TF_VAR_telegram_allowed_users` can invoke commands; everyone else gets `Not authorized.` and the attempt is logged (`make bot-logs`).

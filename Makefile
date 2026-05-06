@@ -356,6 +356,8 @@ bot-install: check-bot-env ## Install/upgrade the bot on an already-deployed VPS
 	CAMOUFLAGE_DOMAIN=$$(cd $(TF_DIR) && terraform output -raw camouflage_domain); \
 	MTPROTO_PORT=$$(cd $(TF_DIR) && terraform output -raw mtproto_port); \
 	AWS_REGION=$$(cd $(TF_DIR) && terraform output -raw aws_region 2>/dev/null || echo eu-north-1); \
+	AMNEZIA_ENABLED=$$(cd $(TF_DIR) && terraform output -raw amnezia_enabled 2>/dev/null || echo false); \
+	[ "$$AMNEZIA_ENABLED" = "true" ] && AMNEZIA_ENV=true || AMNEZIA_ENV=; \
 	echo "Uploading bot.py and install-bot.sh to $$HOST…"; \
 	scp -q -o StrictHostKeyChecking=no \
 		$(TF_DIR)/scripts/bot.py \
@@ -374,6 +376,7 @@ bot-install: check-bot-env ## Install/upgrade the bot on an already-deployed VPS
 			XRAY_SHORT_ID='$$XRAY_SHORT_ID' \
 			CAMOUFLAGE_DOMAIN='$$CAMOUFLAGE_DOMAIN' \
 			MTPROTO_PORT='$$MTPROTO_PORT' \
+			AMNEZIA_ENABLED='$$AMNEZIA_ENV' \
 			BOT_PY_PATH=/opt/lazy-vps-bot/bot.py \
 			/opt/lazy-vps-bot/install-bot.sh"
 	@echo ""
