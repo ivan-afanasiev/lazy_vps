@@ -185,6 +185,27 @@ variable "amnezia_s2" {
   default     = 0
 }
 
+# --- bot.py / install-bot.sh fetch source ---
+# Both scripts used to be inlined into user_data via templatefile()
+# but they exceed AWS's hard 16 KB user_data limit when combined with
+# Amnezia + Cloudflare. Instead the rendered user_data fetches them
+# from the project's public GitHub repo at boot time. Override these
+# only if you've forked the repo. The default ref is `master`; pin to
+# a specific commit SHA (40-hex-char) when you need reproducible
+# deploys (e.g. same code on a re-deploy 6 months from now).
+
+variable "lazy_vps_repo" {
+  description = "GitHub <owner>/<repo> to fetch bot.py + install-bot.sh from at boot. Override only if you've forked."
+  type        = string
+  default     = "ivan-afanasiev/lazy_vps"
+}
+
+variable "lazy_vps_ref" {
+  description = "Git ref (branch / tag / commit SHA) to fetch bot.py + install-bot.sh from. Default 'master' tracks upstream; pin to a SHA for reproducible deploys."
+  type        = string
+  default     = "master"
+}
+
 # --- Cloudflare-fronted VLESS-WS (optional) ---
 # Adds a *second* VLESS inbound on the VPS that listens for plain HTTP
 # WebSocket traffic on an internal port. Cloudflare terminates TLS on

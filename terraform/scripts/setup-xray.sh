@@ -294,21 +294,35 @@ echo "Telegram link: $TG_LINK"
 # ============================================
 # lazy-vps-bot + lazy-vps-ctl
 # ============================================
-# We write bot.py and install-bot.sh to disk (both injected verbatim via
-# Terraform template expansion, NOT interpreted as shell), then run the
-# installer with the bot/auth env vars set. The installer is the same code
-# path used by `make bot-install` on an already-running VPS.
+# bot.py (~24 KB) and install-bot.sh (~8 KB) used to be inlined via
+# Terraform template expansion, but that pushed user_data past AWS's
+# hard 16 KB cap once we added Amnezia + Cloudflare. Instead we fetch
+# them from the project's public GitHub repo at the *exact commit*
+# this user_data was rendered from, so deploys are reproducible:
+# updating these scripts upstream doesn't change behaviour on
+# already-running boxes (which use ignore_changes on user_data
+# anyway), and a fresh deploy from any old commit gets the right
+# matched pair. The installer is the same code path used by
+# `make bot-install` on an already-running VPS.
+
+LAZY_VPS_REPO="${lazy_vps_repo}"
+LAZY_VPS_REF="${lazy_vps_ref}"
+RAW_BASE="https://raw.githubusercontent.com/$LAZY_VPS_REPO/$LAZY_VPS_REF/terraform/scripts"
 
 mkdir -p /opt/lazy-vps-bot
 
-cat > /opt/lazy-vps-bot/bot.py <<'BOTPY'
-${bot_py}
-BOTPY
-chmod 644 /opt/lazy-vps-bot/bot.py
+# `--retry-all-errors` retries on connection refused, DNS hiccups,
+# 5xx, etc. — fresh EC2s sometimes need 10-20 s of network warmup
+# before egress is fully online.
+fetch_to() {
+  local url="$1" dest="$2"
+  curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors --max-time 60 \
+    -o "$dest" "$url"
+}
 
-cat > /opt/lazy-vps-bot/install-bot.sh <<'INSTALLBOT'
-${install_bot_sh}
-INSTALLBOT
+fetch_to "$RAW_BASE/bot.py"          /opt/lazy-vps-bot/bot.py
+fetch_to "$RAW_BASE/install-bot.sh"  /opt/lazy-vps-bot/install-bot.sh
+chmod 644 /opt/lazy-vps-bot/bot.py
 chmod 755 /opt/lazy-vps-bot/install-bot.sh
 
 TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \

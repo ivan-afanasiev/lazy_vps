@@ -229,8 +229,11 @@ resource "aws_instance" "vps" {
   }
 
   # user_data is limited to 16 KB uncompressed but cloud-init accepts gzip.
-  # We exceed 16 KB because of the embedded bot.py + install-bot.sh, so we
-  # gzip and base64-encode (user_data_base64 has a larger effective limit).
+  # We compress + base64-encode (user_data_base64 has a larger effective
+  # limit). bot.py and install-bot.sh used to be inlined into the script
+  # via templatefile() but the rendered output now exceeds 16 KB even
+  # gzipped — instead user_data fetches them from GitHub at boot time
+  # using lazy_vps_repo / lazy_vps_ref.
   user_data_base64 = base64gzip(templatefile("${path.module}/scripts/setup-xray.sh", {
     xray_uuid              = random_uuid.xray_uuid.result
     xray_short_id          = random_id.xray_short_id.hex
@@ -240,8 +243,8 @@ resource "aws_instance" "vps" {
     telegram_bot_token     = var.telegram_bot_token
     telegram_allowed_users = jsonencode(var.telegram_allowed_users)
     aws_region             = var.aws_region
-    bot_py                 = file("${path.module}/scripts/bot.py")
-    install_bot_sh         = file("${path.module}/scripts/install-bot.sh")
+    lazy_vps_repo          = var.lazy_vps_repo
+    lazy_vps_ref           = var.lazy_vps_ref
     tailscale_auth_key     = var.tailscale_auth_key
     tailscale_hostname     = var.tailscale_hostname
     tailscale_tags         = join(",", var.tailscale_tags)
