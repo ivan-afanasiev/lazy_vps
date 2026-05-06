@@ -333,6 +333,7 @@ XRAY_SHORT_ID="$XRAY_SHORT_ID" \
 CAMOUFLAGE_DOMAIN="$CAMOUFLAGE_DOMAIN" \
 MTPROTO_PORT="$MTPROTO_PORT" \
 BOT_PY_PATH=/opt/lazy-vps-bot/bot.py \
+LAZY_VPS_INSIDE_CLOUDINIT=1 \
 /opt/lazy-vps-bot/install-bot.sh
 
 # ============================================

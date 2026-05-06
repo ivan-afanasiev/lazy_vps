@@ -39,7 +39,16 @@ fi
 # --- Wait for any running apt / cloud-init to finish so we don't race
 #     the dpkg lock. On a freshly-booted VPS, user-data is still running
 #     apt-get upgrade when `make bot-install` is run for the first time.
-if command -v cloud-init >/dev/null 2>&1; then
+#
+# IMPORTANT: When this script is executed *from inside* cloud-init's own
+# user_data (i.e. by setup-xray.sh on first boot), `cloud-init status
+# --wait` would deadlock — cloud-init can't finish until user_data
+# returns, user_data can't return until install-bot.sh returns,
+# install-bot.sh can't return until cloud-init finishes. setup-xray.sh
+# sets LAZY_VPS_INSIDE_CLOUDINIT=1 to tell us to skip the wait. The
+# dpkg-lock loop below still runs and is sufficient on its own to
+# avoid the apt race.
+if [ "${LAZY_VPS_INSIDE_CLOUDINIT:-}" != "1" ] && command -v cloud-init >/dev/null 2>&1; then
   cloud-init status --wait >/dev/null 2>&1 || true
 fi
 for i in $(seq 1 60); do
