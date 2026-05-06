@@ -22,6 +22,9 @@ AMNEZIA_JMIN="${amnezia_jmin}"
 AMNEZIA_JMAX="${amnezia_jmax}"
 AMNEZIA_S1="${amnezia_s1}"
 AMNEZIA_S2="${amnezia_s2}"
+CLOUDFLARE_ENABLED="${cloudflare_enabled}"
+CLOUDFLARE_DOMAIN="${cloudflare_domain}"
+CLOUDFLARE_WS_PATH="${cloudflare_ws_path}"
 
 # --- System Update ---
 apt-get update -y
@@ -46,6 +49,47 @@ if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
   echo "FATAL: could not parse xray x25519 output:" >&2
   echo "$KEY_OUTPUT" >&2
   exit 1
+fi
+
+# --- Build optional Cloudflare-fronted VLESS-WS inbound ---
+# When enabled, Xray also listens on the loopback-reachable port 8080
+# in plain HTTP, expecting WebSocket upgrades on $CLOUDFLARE_WS_PATH.
+# Cloudflare's edge terminates TLS for $CLOUDFLARE_DOMAIN and proxies
+# the upgraded WS frames to us — so on the wire from the VPS's POV
+# this is HTTP, but to clients (and to TSPU) it's all wrapped in
+# Cloudflare's edge TLS.
+if [ -n "$CLOUDFLARE_ENABLED" ]; then
+  CF_INBOUND_JSON=$(cat <<CFINBOUND
+,
+    {
+      "listen": "0.0.0.0",
+      "port": 8080,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "$XRAY_UUID" }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "$CLOUDFLARE_WS_PATH",
+          "headers": {
+            "Host": "$CLOUDFLARE_DOMAIN"
+          }
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"]
+      }
+    }
+CFINBOUND
+)
+else
+  CF_INBOUND_JSON=""
 fi
 
 # --- Write Xray Config ---
@@ -94,7 +138,7 @@ cat > /usr/local/etc/xray/config.json <<XRAYCONF
           "quic"
         ]
       }
-    }
+    }$CF_INBOUND_JSON
   ],
   "outbounds": [
     {
@@ -112,6 +156,15 @@ XRAYCONF
 # --- Save public key for client config retrieval ---
 echo "$PUBLIC_KEY" > /usr/local/etc/xray/public_key.txt
 chmod 644 /usr/local/etc/xray/public_key.txt
+
+# --- Save Cloudflare-WS metadata for client config retrieval ---
+# `make vless-link` reads these to assemble the second link. Same UUID
+# as Reality (see config.json above), only the transport differs.
+if [ -n "$CLOUDFLARE_ENABLED" ]; then
+  echo "$CLOUDFLARE_DOMAIN" > /usr/local/etc/xray/cf_domain.txt
+  echo "$CLOUDFLARE_WS_PATH" > /usr/local/etc/xray/cf_ws_path.txt
+  chmod 644 /usr/local/etc/xray/cf_domain.txt /usr/local/etc/xray/cf_ws_path.txt
+fi
 
 # --- Enable and Start ---
 systemctl enable xray

@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
+    }
   }
 }
 
@@ -40,6 +44,32 @@ resource "random_uuid" "xray_uuid" {}
 
 resource "random_id" "xray_short_id" {
   byte_length = 8
+}
+
+# When cloudflare_ws_path isn't pinned by the user, generate a random
+# 16-hex-char path. This is a soft password — Xray returns 404 on
+# anything else, so probes that don't know the path see what looks
+# like a static, mostly-empty website behind the Cloudflare cert.
+resource "random_id" "cloudflare_ws_path" {
+  byte_length = 8
+}
+
+# Cloudflare publishes its IPv4 ranges at a stable URL. Fetch them at
+# plan time so we can scope the WS-fronting ingress rule to them and
+# only them — your AWS Elastic IP will accept VLESS-WS traffic *only*
+# from Cloudflare's edge, not from the open internet. Auto-refreshes
+# whenever you re-run `make deploy`.
+data "http" "cloudflare_ipv4" {
+  count = var.cloudflare_enabled ? 1 : 0
+  url   = "https://www.cloudflare.com/ips-v4"
+}
+
+locals {
+  cloudflare_ipv4_ranges = var.cloudflare_enabled ? compact(split("\n", data.http.cloudflare_ipv4[0].response_body)) : []
+  # If the user didn't pin a WS path, fall back to the random one. The
+  # random_id always exists (it's cheap and stateless), but we only
+  # actually plumb the resulting path into Xray when CF is enabled.
+  cloudflare_ws_path_resolved = var.cloudflare_ws_path != "" ? var.cloudflare_ws_path : "/${random_id.cloudflare_ws_path.hex}"
 }
 
 # --- Networking ---
@@ -89,6 +119,23 @@ resource "aws_security_group" "vps" {
       to_port     = var.amnezia_port
       protocol    = "udp"
       cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
+  # Cloudflare-fronted VLESS-over-WebSocket. Cloudflare connects to
+  # our origin on TCP/8080 in plain HTTP (TLS is terminated at the
+  # Cloudflare edge); we lock this rule down to Cloudflare's published
+  # IPv4 ranges so nobody else can probe :8080 from the open internet.
+  # The user must also add a Cloudflare *Origin Rule* mapping
+  # cloudflare_domain to "Origin Port = 8080" — see the README.
+  dynamic "ingress" {
+    for_each = var.cloudflare_enabled ? [1] : []
+    content {
+      description = "Cloudflare-fronted VLESS-WS"
+      from_port   = 8080
+      to_port     = 8080
+      protocol    = "tcp"
+      cidr_blocks = local.cloudflare_ipv4_ranges
     }
   }
 
@@ -205,6 +252,9 @@ resource "aws_instance" "vps" {
     amnezia_jmax           = var.amnezia_jmax
     amnezia_s1             = var.amnezia_s1
     amnezia_s2             = var.amnezia_s2
+    cloudflare_enabled     = var.cloudflare_enabled ? "true" : ""
+    cloudflare_domain      = var.cloudflare_domain
+    cloudflare_ws_path     = local.cloudflare_ws_path_resolved
   }))
 
   # user_data runs only on first boot. Changing it would force a full instance

@@ -26,3 +26,13 @@ export TF_VAR_telegram_allowed_users='["alice","123456789"]'
 # (or false) to disable. See README "Amnezia VPN (optional)" for context.
 # export TF_VAR_amnezia_enabled=true
 # export TF_VAR_amnezia_port=51820
+
+# --- Cloudflare-fronted VLESS-WS (optional) ---
+# Routes VLESS over Cloudflare so TSPU sees a connection to Cloudflare,
+# not your AWS IP. Requires a domain on Cloudflare (Free plan is fine)
+# with the chosen subdomain set to "Proxied" (orange cloud). See README
+# "Cloudflare-fronted VLESS (optional)" for the one-time CF dashboard
+# clicks (DNS A record, SSL/TLS = Full, one Origin Rule for port 8080).
+# export TF_VAR_cloudflare_enabled=true
+# export TF_VAR_cloudflare_domain='connect.lazy-vps.com'
+# export TF_VAR_cloudflare_ws_path='/optional-pinned-path'   # default: random

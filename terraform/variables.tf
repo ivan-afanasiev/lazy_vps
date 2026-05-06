@@ -184,3 +184,52 @@ variable "amnezia_s2" {
   type        = number
   default     = 0
 }
+
+# --- Cloudflare-fronted VLESS-WS (optional) ---
+# Adds a *second* VLESS inbound on the VPS that listens for plain HTTP
+# WebSocket traffic on an internal port. Cloudflare terminates TLS on
+# its edge for `cloudflare_domain` and proxies WebSocket frames to the
+# VPS. From TSPU's point of view, traffic to your VPS is just a TLS
+# connection to a Cloudflare anycast IP — indistinguishable from any
+# other Cloudflare-hosted site, so blocking it requires blocking
+# Cloudflare itself.
+#
+# Off by default. Enable by setting TF_VAR_cloudflare_enabled=true and
+# TF_VAR_cloudflare_domain to your proxied subdomain. See README
+# "Cloudflare-fronted VLESS (optional)" for the one-time DNS setup.
+#
+# This is a *secondary* transport — the existing Reality inbound stays
+# on. Clients get both links and use whichever is faster on their
+# network.
+
+variable "cloudflare_enabled" {
+  description = "Enable Cloudflare-fronted VLESS-over-WebSocket. Default: false."
+  type        = bool
+  default     = false
+}
+
+variable "cloudflare_domain" {
+  description = <<-EOT
+    Subdomain to expose VLESS-WS on, e.g. connect.lazy-vps.com. Must be
+    a "Proxied" record in your Cloudflare dashboard pointing at the VPS
+    Elastic IP. Required when cloudflare_enabled=true; ignored otherwise.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = !var.cloudflare_enabled || length(var.cloudflare_domain) > 0
+    error_message = "cloudflare_domain must be set when cloudflare_enabled=true. Set TF_VAR_cloudflare_domain, e.g. 'connect.lazy-vps.com'."
+  }
+}
+
+variable "cloudflare_ws_path" {
+  description = <<-EOT
+    URL path the VLESS-WS endpoint listens on. Acts as a soft
+    password — anyone hitting cloudflare_domain at the wrong path gets
+    a 404 from Xray and the connection looks like an inert visit to
+    a (probably) static site. Default: /<random hex>.
+  EOT
+  type        = string
+  default     = ""
+}

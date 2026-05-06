@@ -194,29 +194,44 @@ output: ## Show all Terraform outputs
 # ──────────────────────────────────────────────
 
 .PHONY: vless-link
-vless-link: ## Get the VLESS connection link (run ~3 min after deploy)
+vless-link: ## Get the VLESS connection link(s). Reality always; CF-WS too if enabled.
 	@IP=$$(cd $(TF_DIR) && terraform output -raw server_ip) && \
 	$(RESOLVE_HOST) && SSH_HOST=$$HOST && \
 	UUID=$$(cd $(TF_DIR) && terraform output -raw xray_uuid) && \
 	SID=$$(cd $(TF_DIR) && terraform output -raw xray_short_id) && \
 	SNI=$$(cd $(TF_DIR) && terraform output -raw camouflage_domain) && \
+	CF_ENABLED=$$(cd $(TF_DIR) && terraform output -raw cloudflare_enabled 2>/dev/null || echo false) && \
 	PBK=$$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$$SSH_HOST 'cat /usr/local/etc/xray/public_key.txt' 2>/dev/null) && \
-	LINK="vless://$$UUID@$$IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$$SNI&fp=chrome&pbk=$$PBK&sid=$$SID&type=tcp#lazy-vps" && \
+	[ -n "$$PBK" ] || { echo "❌ Could not retrieve public key. Server may still be starting — wait a minute and try again."; exit 1; } && \
+	REALITY_LINK="vless://$$UUID@$$IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$$SNI&fp=chrome&pbk=$$PBK&sid=$$SID&type=tcp#lazy-vps-reality" && \
 	echo "" && \
 	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
-	echo "VLESS Connection Link:" && \
+	echo "VLESS Reality link (direct, primary):" && \
 	echo "" && \
-	echo "$$LINK" && \
+	echo "$$REALITY_LINK" && \
+	if [ "$$CF_ENABLED" = "true" ]; then \
+		CF_DOMAIN=$$(cd $(TF_DIR) && terraform output -raw cloudflare_domain 2>/dev/null) && \
+		CF_PATH=$$(cd $(TF_DIR) && terraform output -raw cloudflare_ws_path 2>/dev/null) && \
+		[ -n "$$CF_DOMAIN" ] && [ -n "$$CF_PATH" ] || { echo "❌ Cloudflare flag is on but cloudflare_domain / ws_path output is missing."; exit 1; } && \
+		ENCODED_PATH=$$(printf '%s' "$$CF_PATH" | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(), safe=""), end="")') && \
+		CF_LINK="vless://$$UUID@$$CF_DOMAIN:443?encryption=none&security=tls&sni=$$CF_DOMAIN&fp=chrome&type=ws&host=$$CF_DOMAIN&path=$$ENCODED_PATH#lazy-vps-cf" && \
+		echo "" && \
+		echo "VLESS Cloudflare-WS link (fallback when Reality is throttled):" && \
+		echo "" && \
+		echo "$$CF_LINK" && \
+		echo "" && \
+		echo "Distribute both. Most clients (Hiddify Next, v2rayN) can be set" && \
+		echo "to try them in order; if Reality is rate-limited, CF-WS takes over."; \
+	fi && \
 	echo "" && \
-	echo "Import this link into your client app:" && \
+	echo "Import these links into your client app:" && \
 	echo "  iOS:     Streisand / V2Box" && \
 	echo "  macOS:   V2Box / Hiddify Next" && \
 	echo "  Android: v2rayNG / Hiddify Next" && \
 	echo "  Windows: v2rayN" && \
 	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
 	echo "" && \
-	echo "For Telegram proxy link, run: make tg-link" || \
-	{ echo "❌ Could not retrieve public key. Server may still be starting — wait a minute and try again."; exit 1; }
+	echo "For Telegram proxy link, run: make tg-link"
 
 .PHONY: tg-link
 tg-link: ## Get the Telegram proxy link (run ~4 min after deploy)

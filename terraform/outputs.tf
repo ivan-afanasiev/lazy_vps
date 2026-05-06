@@ -91,3 +91,19 @@ output "get_amnezia_config" {
     aws_eip.vps.public_ip,
   ) : "AmneziaWG is disabled. Set TF_VAR_amnezia_enabled=true and re-deploy."
 }
+
+output "cloudflare_enabled" {
+  description = "Whether Cloudflare-fronted VLESS-WS is configured"
+  value       = var.cloudflare_enabled
+}
+
+output "cloudflare_domain" {
+  description = "Subdomain serving Cloudflare-fronted VLESS-WS (empty when disabled)"
+  value       = var.cloudflare_domain
+}
+
+output "cloudflare_ws_path" {
+  description = "URL path for the WS endpoint behind Cloudflare (acts as soft password)"
+  value       = local.cloudflare_ws_path_resolved
+  sensitive   = true
+}

@@ -146,6 +146,12 @@ Loses the "free tier" story but gains reliability. Probably worth it.
 
 ### 5. Largest — Cloudflare-fronted VLESS-WS as a last-resort transport
 
+> **Status (2026-05): implemented as `cloudflare_enabled` feature flag.**
+> Off by default. Enable with `TF_VAR_cloudflare_enabled=true` plus
+> `TF_VAR_cloudflare_domain` pointing at a Cloudflare-Proxied subdomain.
+> See README "Cloudflare-fronted VLESS (optional)" for the one-time
+> Cloudflare dashboard setup.
+
 The most reliable path when direct :443 to any foreign host is throttled,
 because blocking it requires blocking Cloudflare itself.
 

@@ -21,6 +21,7 @@ One command to deploy, one command to destroy. Runs on a single `t3.micro` — f
 - [Configuration](#configuration)
 - [Tailscale (optional)](#tailscale-optional)
 - [Amnezia VPN (optional)](#amnezia-vpn-optional)
+- [Cloudflare-fronted VLESS (optional)](#cloudflare-fronted-vless-optional)
 - [How it works](#how-it-works)
 - [Cost](#cost)
 - [Troubleshooting](#troubleshooting)
@@ -397,6 +398,86 @@ Set `TF_VAR_amnezia_enabled=false` (or unset) and `make deploy`. Terraform remov
 
 ---
 
+## Cloudflare-fronted VLESS (optional)
+
+The reliability fallback for when direct VLESS Reality to AWS is being throttled. Adds a **second `vless://` link** that routes through Cloudflare instead of connecting directly to your VPS — so what TSPU (or any DPI) sees is a TLS connection to a Cloudflare anycast IP, not to your AWS Elastic IP.
+
+How it works:
+
+1. Client opens a TLS connection to `connect.lazy-vps.com:443` → resolves to a Cloudflare edge IP.
+2. Cloudflare terminates TLS, sees a WebSocket upgrade for path `/<random>`, proxies the WS frames to your VPS.
+3. The VPS's security group accepts those frames on `:8080` *only* from Cloudflare's published IPv4 ranges.
+4. Xray reads the WS frames as a VLESS inbound and routes the tunneled traffic out.
+
+Blocking this requires blocking Cloudflare itself in Russia — which would take out a huge chunk of the Russian internet. It's been threatened, never sustained.
+
+> Reality is still the recommended primary transport (lower latency, no third party in the path). Cloudflare-WS is the *fallback* — distribute both links and most clients will pick the working one automatically.
+
+### One-time setup (the part you do in the Cloudflare dashboard)
+
+You need a domain you own (Cloudflare Free plan is enough). Skip steps 1-2 if your nameservers already point at Cloudflare.
+
+1. **Add the domain to Cloudflare**: dash.cloudflare.com → Add a Site → enter your apex domain → Free plan. Cloudflare gives you two `*.ns.cloudflare.com` nameservers.
+2. **Update nameservers at your registrar** (GoDaddy / Namecheap / etc.) to point at the Cloudflare ones. Wait for propagation (`dig NS yourdomain.com` should show the Cloudflare names — usually 10 min to 2 hours).
+3. **DNS record** for the subdomain: Cloudflare → DNS → Records → Add record. Type `A`, Name `connect` (or whatever you want — this becomes `connect.yourdomain.com`), IPv4 = your VPS's Elastic IP, **Proxy status = 🟠 Proxied** (this is the whole point — orange cloud must be ON). TTL Auto.
+4. **SSL/TLS mode**: Cloudflare → SSL/TLS → Overview → set to **"Full"** (NOT "Full (strict)" — Xray's WS endpoint serves plain HTTP to the Cloudflare side; CF terminates TLS upstream). Edge Certificates → ensure **"Always Use HTTPS"** is **off** (it interferes with WS upgrades on some configs).
+5. **Origin Rule** to forward Cloudflare → your VPS on port 8080 (instead of the default 443): Cloudflare → Rules → Origin Rules → Create rule. Match: `Hostname` `equals` `connect.yourdomain.com`. Action: `Rewrite to dynamic` → **Origin port** = `8080`. Save.
+
+### Setup (the Terraform side)
+
+1. Add the feature flag and your domain to `.envrc`:
+
+   ```bash
+   export TF_VAR_cloudflare_enabled=true
+   export TF_VAR_cloudflare_domain='connect.yourdomain.com'
+   # Optional — leave unset and Terraform generates a random WS path:
+   # export TF_VAR_cloudflare_ws_path='/some-secret-path'
+   ```
+
+2. **Fresh deployment**: `make deploy` — opens TCP/8080 in the SG (restricted to Cloudflare IP ranges, refreshed at every plan from `https://www.cloudflare.com/ips-v4`), and Xray is configured with the second VLESS-WS inbound.
+
+3. **Existing deployment**: same caveat as Tailscale and AmneziaWG — `user_data` is `ignore_changes`'d, so the SG rule lands on the existing VPS but the new Xray inbound does not. Either `make destroy && make deploy` (rotates Reality keys), or SSH in and edit `/usr/local/etc/xray/config.json` by hand to add the WS inbound.
+
+### Connecting
+
+```bash
+make vless-link
+```
+
+When `cloudflare_enabled` is on, this prints **two** links: the existing Reality one *and* a new `lazy-vps-cf` one. Distribute both. Most clients (Hiddify Next, v2rayN, V2Box) accept multiple configs and try them in order; if Reality is degraded, the CF-WS one takes over.
+
+### Verifying it actually goes through Cloudflare
+
+```bash
+# DNS resolves to Cloudflare's edge:
+dig +short connect.yourdomain.com
+# Should be 104.x or 172.x or 188.x — Cloudflare ranges, not your EIP.
+
+# Cloudflare answers TLS with the right cert:
+echo | openssl s_client -connect connect.yourdomain.com:443 -servername connect.yourdomain.com 2>/dev/null \
+  | openssl x509 -noout -ext subjectAltName
+# Should show "*.yourdomain.com" — Cloudflare's Universal SSL cert.
+
+# The WS endpoint is alive (will 404 from Xray on a wrong path; that's correct):
+curl -I https://connect.yourdomain.com/wrong-path
+# HTTP/2 404 from Cloudflare or your origin = healthy.
+```
+
+### Disabling
+
+Set `TF_VAR_cloudflare_enabled=false` (or unset) and `make deploy`. Terraform removes the SG rule. The Xray WS inbound stays in `config.json` on the running VPS until the next instance replacement; harmless because Cloudflare can no longer reach it. You can also remove the DNS record from Cloudflare (or just disable the orange cloud) to clean up the domain side.
+
+### Why this is off by default
+
+- It only matters if you've actually seen direct Reality get throttled — extra latency for nothing if Reality is working fine on your network.
+- Requires a domain (yearly registration cost) and a Cloudflare account.
+- Trades the "100% control of the path" property of Reality for "Cloudflare sees the connection metadata". Cloudflare can't decrypt your VPN traffic (VLESS encrypts inside the WS), but it sees source/dest IPs, timing, and traffic volumes per their ToS.
+- Adds ~30-100 ms of latency vs. direct Reality.
+
+> Per-user link rotation is not built in. Right now the same VLESS UUID is used for both Reality and the CF-WS link, so you can't revoke just one. If a CF-WS link leaks, rotating it means rotating the Reality one too (`make destroy && make deploy`).
+
+---
+
 ## How it works
 
 ```
@@ -412,12 +493,16 @@ Set `TF_VAR_amnezia_enabled=false` (or unset) and `make deploy`. Terraform remov
   VPN traffic ─────▶│  AmneziaWG (port 51820/udp)      │──▶ Internet
   (optional flag)   │  Obfuscated WireGuard            │
                     │                                  │
+  VPN traffic ─────▶│  Xray VLESS-WS (port 8080/tcp)   │──▶ Internet
+  via Cloudflare    │  Reached only via Cloudflare;    │
+  (optional flag)   │  CF terminates TLS upstream      │
+                    │                                  │
   You (Telegram) ──▶│  lazy-vps-bot (Python, Docker)   │
                     │  IAM role → CloudWatch API       │
                     └──────────────────────────────────┘
 ```
 
-Xray, telemt, and AmneziaWG are independent — they share only the VPS. You can use any combination on a given device. AmneziaWG is off by default; see [Amnezia VPN (optional)](#amnezia-vpn-optional).
+Xray, telemt, and AmneziaWG are independent — they share only the VPS. You can use any combination on a given device. AmneziaWG and Cloudflare-fronted VLESS are off by default; see [Amnezia VPN (optional)](#amnezia-vpn-optional) and [Cloudflare-fronted VLESS (optional)](#cloudflare-fronted-vless-optional).
 
 ---
 
@@ -513,7 +598,7 @@ make destroy            # terraform destroy
 make plan               # Preview changes
 
 # Links
-make vless-link         # VPN link
+make vless-link         # VPN link(s) — Reality + Cloudflare-WS if enabled
 make tg-link            # Telegram proxy link
 make amnezia-link       # AmneziaWG vpn:// link + .conf (only if amnezia_enabled=true)
 make amnezia-qr         # Download AmneziaWG QR code as PNG
